@@ -1426,11 +1426,61 @@ export function createElectron(hooks: Hooks) {
 		WebContentsView,
 	});
 	Object.assign(electron, optionalElectron());
+	/**
+	 * A renderer's navigator.usb/hid/serial request (runtime/device-chooser.ts),
+	 * decided as Electron does: the session's permission check, then its
+	 * `select-*` handler, without which the request is cancelled.
+	 */
+	const selectDevice = (
+		webContents: WebContents,
+		windowId: number,
+		message: Record<string, unknown>,
+	) => {
+		const kind = String(message.kind);
+		const target = webContents.session;
+		const name = kind === "serial" ? "select-serial-port" : `select-${kind}-device`;
+		const reply = (result: object) =>
+			hooks.send({ type: "device-select-result", windowId, id: message.id, ...result });
+		if (message.phase === "check") {
+			let allowed = target.listenerCount(name) > 0;
+			const check = target.getPermissionCheckHandler();
+			if (allowed && typeof check === "function") {
+				const url = webContents.getURL();
+				allowed =
+					check(webContents, kind, URL.parse(url)?.origin ?? url, {
+						requestingUrl: url,
+						isMainFrame: true,
+					}) !== false;
+			}
+			reply({ allowed });
+			return;
+		}
+		let answered = false;
+		const callback = (id?: unknown) => {
+			if (answered) return;
+			answered = true;
+			reply({ selected: typeof id === "string" ? id : undefined });
+		};
+		const devices = message.devices as Record<string, unknown>[];
+		if (!target.listenerCount(name)) callback();
+		else if (kind === "serial") target.emit(name, cancelable(), devices, webContents, callback);
+		else
+			target.emit(
+				name,
+				cancelable(),
+				{ deviceList: devices, frame: webContents.mainFrame },
+				callback,
+			);
+	};
 	const receive = async (message: Record<string, unknown>): Promise<void> => {
 		platform.receive(message);
 		const windowId = Number(message.windowId);
 		const window = windows.get(windowId);
 		const webContents = contents.get(windowId);
+		if (message.type === "device-select" && webContents) {
+			selectDevice(webContents, windowId, message);
+			return;
+		}
 		if (message.type === "window-event" && webContents) {
 			if (message.event === "did-start-loading") webContents.loading = true;
 			if (message.event === "did-stop-loading" || message.event === "did-fail-load")

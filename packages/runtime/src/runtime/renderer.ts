@@ -9,6 +9,7 @@ import { protocolURL as encodeProtocolURL } from "../shared/urls";
 import { bridgeValue, preloadWindow } from "./bridge-values";
 import { makeBuiltins, makeProcess } from "./builtins";
 import { curlAddonLoader } from "./curl-addon";
+import { type DeviceSelect, installDeviceChoosers } from "./device-chooser";
 import { configureCompatibility, noteStub, withFallback } from "./fallback";
 import { VirtualFileSystem } from "./filesystem";
 import { ModuleLoader } from "./loader";
@@ -112,6 +113,16 @@ function boot(): Promise<void> | undefined {
 			timer: ReturnType<typeof setTimeout>;
 		}
 	>();
+	const deviceRequests = new Map<number, (result: Record<string, unknown>) => void>();
+	let nextDeviceRequest = 0;
+	const deviceSelect: DeviceSelect = (request) =>
+		new Promise((resolve) => {
+			const id = ++nextDeviceRequest;
+			deviceRequests.set(id, resolve);
+			send({ type: "device-select", id, ...request });
+		});
+	// Before any preload or page script can reach navigator.usb/hid/serial.
+	installDeviceChoosers(window, deviceSelect);
 	const vfs = new VirtualFileSystem(config.snapshot, (patches) => send({ type: "fs", patches }));
 	vfs.cwd = applicationPath(config.app);
 	const unsubscribe = bridge.subscribe(windowId, (message) => {
@@ -121,6 +132,11 @@ function boot(): Promise<void> | undefined {
 		if (message.type !== "renderer-port") message = structuredClone(message);
 		if (message.type === "renderer-host-result") {
 			host.receive({ ...message, type: "result" } as unknown as RpcResult);
+			return;
+		}
+		if (message.type === "device-select-result") {
+			deviceRequests.get(Number(message.id))?.(message);
+			deviceRequests.delete(Number(message.id));
 			return;
 		}
 		if (message.type === "renderer-port") {

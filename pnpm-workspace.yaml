@@ -4,3 +4,7 @@ allowBuilds:
     "@mercuryworkshop/scramjet": false
     bufferutil: false
     esbuild: true
+    # Tests use node-usb's JavaScript; Neutron supplies its native binding.
+    usb: false
+minimumReleaseAgeExclude:
+    - usb@2.19.2

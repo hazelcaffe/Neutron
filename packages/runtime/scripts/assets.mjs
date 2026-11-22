@@ -127,6 +127,16 @@ export function patchScramjet(source) {
 			'has:(I,g)=>null!==I.getItem(A.url.host+"@"+g),',
 			'has:(I,g)=>"symbol"==typeof g||g in Object.getPrototypeOf(I)?g in Object.getPrototypeOf(I):null!==I.getItem(A.url.host+"@"+g),',
 		],
+		// Scramjet removes WebHID from proxied windows: every proxied site shares
+		// one origin, so a device granted to one would reach all. Neutron sets
+		// that boundary with the frame's permissions policy instead (app windows
+		// get "hid", Browser tabs "hid 'none'", which nested frames can't lift),
+		// as it does for WebUSB and Web Serial, which Scramjet leaves in place.
+		[
+			"webhid-permissions-policy",
+			'g("Navigator.prototype.hid"),g("HID"),g("HIDDevice"),g("HIDConnectionEvent"),g("HIDInputReportEvent"),',
+			"",
+		],
 		[
 			"xhr-reuse",
 			'A.Proxy("XMLHttpRequest.prototype.open",{apply(I){I.args[1]&&',

@@ -184,6 +184,18 @@ The WASM module is loaded only for apps that ship this addon.
 
 `pnpm build` downloads the published module (SHA-256 checked) unless `packages/libsignal-wasm/dist` has a local build; without it, Signal gets the fallback as before.
 
+**USB devices:** apps reach USB hardware through the browser's WebUSB (Chromium-based browsers).
+
+- **Main process:** the `usb` package (node-usb) runs unchanged. Neutron implements its native binding on WebUSB in the Neutron page. Calls libusb makes synchronous (open, claim, descriptors) block the main process until the page answers; transfers are asynchronous. Once a device is open, its descriptors and string indexes are the device's own.
+- **Choosing devices:** a browser only exposes devices the user picks in its chooser, which opens on a click. When an app looks for USB devices and has none, Neutron shows a banner with **Choose device**. **USB device** in the toolbar adds more at any time. Grants belong to the site serving Neutron: they persist, and every app imported there can use them.
+- **Renderers:** `navigator.usb.requestDevice()`, WebHID's `requestDevice()` and Web Serial's `requestPort()` follow Electron. The browser's chooser runs (it needs a click in the window), then the session's `select-usb-device`, `select-hid-device` or `select-serial-port` handler confirms the device. Without a handler the request is cancelled, as in Electron. Web pages in Browser tabs can't use device APIs at all.
+- **Limits:**
+  - Chromium blocks protected interface classes over WebUSB (HID, mass storage, audio, video, smart cards and others), and `setUSBProtectedClassesHandler` can't lift that. Such devices need WebHID or another API.
+  - Isochronous transfers aren't supported.
+  - WebUSB can't abort a transfer, so data a timed-out or cancelled transfer receives later is dropped.
+  - The bus topology (`busNumber`, `portNumbers`, `parent`) isn't available.
+  - The `node-hid` and `serialport` native addons aren't implemented yet.
+
 AsyncLocalStorage does not automatically propagate through arbitrary native Promise chains. DNS queries use Cloudflare's JSON DoH service rather than the host OS resolver. Readline provides stream-oriented compatibility, not a full terminal editor. `http2`, Node's `node:sqlite`, `inspector`, `cluster`, `repl`, `wasi`, and `trace_events` currently expose logged fallbacks. Their presence in `module.builtinModules` does not imply a working native backend.
 
 ### Unpacked files
@@ -227,7 +239,7 @@ Initial imports use bounded parallel OPFS writes and transfer buffers from the i
 
 ## Current boundaries
 
-- Native `.node` execution (other than the addons rebuilt for WebAssembly: SQLCipher and libsignal), arbitrary OS binaries/shell commands, real OS window handles, Chromium extensions/CDP, OS-global hooks, and native updater installation are not available. Permissive mode substitutes API defaults/no-ops, which may let startup proceed but cannot reproduce these operations.
+- Native `.node` execution (other than the addons Neutron reimplements: SQLCipher, libsignal, node-usb and keytar), arbitrary OS binaries/shell commands, real OS window handles, Chromium extensions/CDP, OS-global hooks, and native updater installation are not available. Permissive mode substitutes API defaults/no-ops, which may let startup proceed but cannot reproduce these operations.
 - BrowserWindow/preload/contextBridge are API emulations. `process.contextIsolated` tells preloads whether to use `contextBridge` or publish to the shared window. This separation of preload globals does **not** reproduce Chromium's isolated worlds or Electron process security. Application renderers share the runtime origin; uploaded code must be trusted.
 - `safeStorage` protects stored ciphertext with a key in the same app's OPFS. It is not an OS credential vault, and existing native Electron ciphertext cannot be decrypted.
 - Scramjet pages use an app-scoped cookie store. The Electron HTTP session cookie jars are separately partitioned; full Chromium partition/storage isolation and a unified page/session layer are not implemented.

@@ -21,6 +21,7 @@ import { isWasmAddonCandidate } from "../shared/wasm-addons";
 import { resolveEntry } from "./importer";
 import { encodeProxyURL, type PageProxy, type ProxySession } from "./proxy";
 import type { AppStorage } from "./storage";
+import { UsbHost } from "./usb";
 
 interface HostedWindow {
 	browser?: ProxySession;
@@ -67,6 +68,12 @@ export interface HostEvents {
 	toast(message: string): void;
 	files(filename: string): void;
 	windows(items: AppWindow[]): void;
+	/** The app is looking for a device it has no access to yet (null: settled). */
+	deviceRequest(request: DeviceRequest | null): void;
+}
+/** An app asked for hardware the browser must grant first; see chooseUsbDevice(). */
+export interface DeviceRequest {
+	kind: "usb";
 }
 /** A popup (context) menu at page coordinates, from Menu.popup(). */
 export interface ContextMenuData {
@@ -112,6 +119,11 @@ export class RuntimeHost {
 	private wake?: WakeLockSentinel;
 	/** Arguments for the instance `app.relaunch()` requested when this one exits. */
 	private relaunch?: string[];
+	/** WebUSB devices for the app's main process (runtime/node-usb.ts). */
+	private readonly usb = new UsbHost((event, device) => {
+		if (this.worker) this.send({ type: "usb", event, device });
+	});
+	private usbRequested = false;
 	constructor(
 		private desktop: HTMLElement,
 		private storage: AppStorage,
@@ -396,6 +408,10 @@ export class RuntimeHost {
 		this.appMenu = [];
 		this.displayedMenu = undefined;
 		this.events.windows([]);
+		// Like process exit closing libusb handles.
+		await this.usb.closeAll();
+		this.usbRequested = false;
+		this.events.deviceRequest(null);
 		await this.wake?.release();
 		this.wake = undefined;
 		await this.storage.flush();
@@ -662,6 +678,7 @@ export class RuntimeHost {
 			}
 			case "renderer-event":
 			case "ipc-result":
+			case "device-select-result":
 				for (const listener of this.windows.get(Number(message.windowId))?.listeners || [])
 					listener(structuredClone(message));
 				break;
@@ -750,7 +767,15 @@ export class RuntimeHost {
 			frame.dataset.neutronId = String(id);
 		}
 		frame.title = options.title || "Electron renderer";
-		frame.setAttribute("allow", "clipboard-read; clipboard-write; fullscreen; autoplay");
+		// Device APIs follow Electron: app windows may use them (with the app's
+		// session handlers), web pages in Browser tabs may not. Every Browser tab
+		// shares this origin, so a device granted to one site would reach all.
+		frame.setAttribute(
+			"allow",
+			`clipboard-read; clipboard-write; fullscreen; autoplay; ${
+				browser ? "usb 'none'; hid 'none'; serial 'none'" : "usb; hid; serial"
+			}`,
+		);
 		const hosted: HostedWindow = {
 			browser,
 			menuVisible: !options.autoHideMenuBar,
@@ -1179,7 +1204,55 @@ export class RuntimeHost {
 			frame.src = url;
 		});
 	}
+	/** Shows the browser's USB device chooser. Call it while handling a click;
+	 * resolves whether the user granted a device. */
+	async chooseUsbDevice(): Promise<boolean> {
+		const granted = Boolean(await this.usb.request());
+		if (granted) this.events.deviceRequest(null);
+		return granted;
+	}
+	dismissDeviceRequest(): void {
+		this.events.deviceRequest(null);
+	}
+	private async usbRequest(method: string, args: unknown[]): Promise<unknown> {
+		const id = Number(args[0]);
+		switch (method) {
+			case "available":
+				return this.usb.available;
+			case "devices":
+				return this.usb.list();
+			case "wanted":
+				// Apps enumerate devices; only the user can grant one. Ask once per run.
+				if (!this.usbRequested && this.usb.available && !(await this.usb.list()).length) {
+					this.usbRequested = true;
+					this.events.deviceRequest({ kind: "usb" });
+				}
+				return;
+			case "open":
+				return this.usb.open(id);
+			case "close":
+				return this.usb.close(id);
+			case "selectConfiguration":
+				return this.usb.selectConfiguration(id, Number(args[1]));
+			case "claimInterface":
+				return this.usb.claimInterface(id, Number(args[1]));
+			case "releaseInterface":
+				return this.usb.releaseInterface(id, Number(args[1]));
+			case "selectAlternateInterface":
+				return this.usb.selectAlternateInterface(id, Number(args[1]), Number(args[2]));
+			case "clearHalt":
+				return this.usb.clearHalt(id, Number(args[1]));
+			case "reset":
+				return this.usb.reset(id);
+			case "control":
+				return this.usb.control(id, args[1] as Uint8Array, args[2] as Uint8Array | number);
+			case "transfer":
+				return this.usb.transfer(id, Number(args[1]), args[2] as Uint8Array | number);
+		}
+		throw new Error(`Unknown USB request: ${method}`);
+	}
 	private async request(method: string, args: unknown[]): Promise<unknown> {
+		if (method.startsWith("usb.")) return this.usbRequest(method.slice(4), args);
 		switch (method) {
 			case "platform.wake":
 				if (args[0]) {

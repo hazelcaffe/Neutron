@@ -65,6 +65,7 @@ export function sessionModule<P extends object>(
 		private requestListeners = new Map<string, Registration>();
 		private permissionRequestHandler: unknown;
 		private permissionCheckHandler: unknown;
+		private deviceHandlers: { permission?: unknown; usbProtectedClasses?: unknown } = {};
 		private preloads: string[] = [];
 		private registeredPreloads = new Map<
 			string,
@@ -393,6 +394,14 @@ export function sessionModule<P extends object>(
 		}
 		setPermissionCheckHandler(handler: unknown): void {
 			this.permissionCheckHandler = handler;
+		}
+		/** Stored for the app. A browser grants devices only through its chooser,
+		 * and its protected USB classes (HID, mass storage, ...) can't be unlocked. */
+		setDevicePermissionHandler(handler: unknown): void {
+			this.deviceHandlers.permission = handler;
+		}
+		setUSBProtectedClassesHandler(handler: unknown): void {
+			this.deviceHandlers.usbProtectedClasses = handler;
 		}
 		getPermissionCheckHandler(): unknown {
 			return this.permissionCheckHandler;

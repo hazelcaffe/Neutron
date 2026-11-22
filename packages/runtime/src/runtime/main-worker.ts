@@ -1,7 +1,7 @@
 import "../shared/worker-base";
 import { Buffer } from "buffer";
 import { LOOPBACK_PROBE, rejectProbe } from "../shared/loopback";
-import { type SyncResult, stringify } from "../shared/sync";
+import { type SyncResult, stringify, syncCall } from "../shared/sync";
 import {
 	applicationEntry,
 	applicationPath,
@@ -11,6 +11,7 @@ import {
 	type RpcResult,
 	type RuntimeConfig,
 } from "../shared/types";
+import type { UsbDeviceInfo } from "../shared/usb";
 import { makeBuiltins, makeProcess } from "./builtins";
 import { curlAddonLoader, isCurlAddon } from "./curl-addon";
 import { createElectron } from "./electron";
@@ -20,6 +21,7 @@ import { ModuleLoader } from "./loader";
 import { LoopbackRegistry } from "./loopback";
 import { fileText, WasmAddons } from "./napi-wasm";
 import { loadCurl, Network } from "./network";
+import { isNodeUsbAddon, nodeUsbAddon, type UsbBridge } from "./node-usb";
 import { processModules } from "./processes";
 import { answerRpc, RpcClient } from "./rpc";
 import { initializeSQLCipher } from "./sqlcipher";
@@ -29,6 +31,8 @@ import { nodeTimers } from "./timers";
 const send = (message: unknown, transfer: Transferable[] = []) =>
 	globalThis.postMessage(message, { transfer });
 const rpc = new RpcClient(send);
+// node-usb's binding (node-usb.ts) hears device changes from the host.
+const usbListeners = new Set<Parameters<UsbBridge["listen"]>[0]>();
 let vfs: VirtualFileSystem;
 let runtime: ReturnType<typeof createElectron>;
 let exiting = false;
@@ -234,13 +238,23 @@ globalThis.addEventListener("message", async (event: MessageEvent<Record<string,
 			builtins.worker_threads = processes.worker_threads;
 			builtins.child_process = processes.child_process;
 			Object.assign(runtime.electron, { utilityProcess: processes.utilityProcess });
+			const curl = curlAddonLoader(network);
+			let usb: object | undefined;
 			const addons = new WasmAddons(
 				fileText(vfs),
 				{
 					network,
 					log: (level, message) => send({ type: "log", level, source: "main", message }),
 				},
-				curlAddonLoader(network),
+				(filename) => {
+					if (!isNodeUsbAddon(filename)) return curl(filename);
+					usb ??= nodeUsbAddon({
+						sync: (method, args) => syncCall(config.instanceId, "host", method, args),
+						call: (method, args) => rpc.call(method, ...args),
+						listen: (listener) => usbListeners.add(listener),
+					});
+					return usb;
+				},
 			);
 			const loader = new ModuleLoader(vfs, builtins, globals, addons.load);
 			builtins.module = loader.moduleBuiltin(applicationEntry(config.app));
@@ -299,6 +313,9 @@ globalThis.addEventListener("message", async (event: MessageEvent<Record<string,
 			},
 			send,
 		);
+	} else if (message.type === "usb") {
+		for (const listener of usbListeners)
+			listener(message.event as "connect" | "disconnect", message.device as UsbDeviceInfo);
 	} else if (runtime && !exiting)
 		void runtime.receive(message).catch((error: unknown) => console.error(error));
 });

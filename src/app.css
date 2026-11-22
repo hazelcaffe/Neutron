@@ -321,3 +321,7 @@ code {
 	flex: none;
 	color: var(--mantine-color-dimmed);
 }
+
+.device-request {
+	border-radius: 0;
+}

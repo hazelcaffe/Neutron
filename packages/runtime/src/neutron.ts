@@ -1,4 +1,10 @@
-import { type AppWindow, type ContextMenuData, type MenuData, RuntimeHost } from "./core/host";
+import {
+	type AppWindow,
+	type ContextMenuData,
+	type DeviceRequest,
+	type MenuData,
+	RuntimeHost,
+} from "./core/host";
 import type { PreparedBundle } from "./core/importer";
 import { PageProxy } from "./core/proxy";
 import { initializeRuntimeWorker } from "./core/runtime-worker";
@@ -34,6 +40,9 @@ export interface NeutronEvents {
 	devtools: boolean;
 	/** `shell.showItemInFolder()`: a path in the app's virtual filesystem. */
 	reveal: string;
+	/** The app is looking for a USB device it has no access to yet: offer
+	 * chooseUsbDevice() (from a click). null once settled. */
+	deviceRequest: DeviceRequest | null;
 }
 
 export interface StartOptions {
@@ -189,6 +198,7 @@ export class Neutron {
 			console: (open) => this.emit("devtools", open),
 			toast: (message) => this.emit("notification", message),
 			files: (filename) => this.emit("reveal", filename),
+			deviceRequest: (request) => this.emit("deviceRequest", request),
 		});
 	}
 
@@ -357,6 +367,22 @@ export class Neutron {
 	/** Activates an item of the open popup menu, or dismisses it (no id). */
 	clickContextMenu(id?: string): void {
 		this.host.contextMenuClick(id);
+	}
+	/**
+	 * Shows the browser's USB device chooser; the chosen device becomes
+	 * available to apps (node-usb in the main process). Browsers only allow
+	 * this while handling a click. Resolves whether a device was granted.
+	 */
+	chooseUsbDevice(): Promise<boolean> {
+		return this.host.chooseUsbDevice();
+	}
+	/** Dismisses a pending deviceRequest without granting anything. */
+	dismissDeviceRequest(): void {
+		this.host.dismissDeviceRequest();
+	}
+	/** Whether this browser has WebUSB (Chromium-based browsers). */
+	static get usbSupported(): boolean {
+		return typeof navigator !== "undefined" && "usb" in navigator;
 	}
 
 	/** Settings saved in browser storage; Neutron itself only reads them when asked. */

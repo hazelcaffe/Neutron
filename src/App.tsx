@@ -1,9 +1,10 @@
-import { Badge, Button, Menu, NativeSelect, Text } from "@mantine/core";
+import { Alert, Badge, Button, Group, Menu, NativeSelect, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import {
 	type AppWindow,
 	type ContextMenuData,
 	createAsar,
+	type DeviceRequest,
 	errorText,
 	type ImportChoice,
 	type ImportReview,
@@ -75,6 +76,7 @@ export function App() {
 	const [windows, setWindows] = useState<readonly AppWindow[]>([]);
 	const [menu, setMenu] = useState<readonly MenuData[]>([]);
 	const [contextMenu, setContextMenu] = useState<ContextMenuData | null>(null);
+	const [deviceRequest, setDeviceRequest] = useState<DeviceRequest | null>(null);
 	const [settings, setSettings] = useState<RuntimeSettings>({ wisp: "" });
 	const [localRelay, setLocalRelay] = useState("");
 	const [errors, setErrors] = useState(0);
@@ -131,6 +133,7 @@ export function App() {
 					instance.on("windows", setWindows),
 					instance.on("menu", setMenu),
 					instance.on("contextMenu", setContextMenu),
+					instance.on("deviceRequest", setDeviceRequest),
 					instance.on("log", (entry) => {
 						if (entry.level === "error") setErrors((count) => count + 1);
 					}),
@@ -304,6 +307,12 @@ export function App() {
 	const hidden = windows.filter((item) => !item.visible);
 	const showTabs = windows.length > 1 || (windows.length === 1 && !visible);
 	const name = running?.manifest.name ?? "The app";
+	// Opens the browser's chooser, so it must run while handling the click.
+	const chooseUsbDevice = () =>
+		neutron?.chooseUsbDevice().then(
+			(granted) => granted && notify(`${name} can now use the USB device you chose.`),
+			(error: unknown) => report(error, "Couldn't give the app a USB device"),
+		);
 
 	return (
 		<div className="shell">
@@ -403,6 +412,19 @@ export function App() {
 				>
 					Files
 				</Button>
+				{Neutron.usbSupported && (
+					<Button
+						id="usb-button"
+						size="xs"
+						variant="subtle"
+						color="gray"
+						disabled={!neutron || !running}
+						title="Give the app a USB device"
+						onClick={() => void chooseUsbDevice()}
+					>
+						USB device
+					</Button>
+				)}
 				<Button
 					id="settings-button"
 					size="xs"
@@ -423,6 +445,33 @@ export function App() {
 			)}
 			{settings.showAppMenu && menu.length > 0 && neutron && (
 				<AppMenuBar items={menu} onClick={(id) => neutron.clickMenu(id)} />
+			)}
+			{deviceRequest && neutron && (
+				<Alert id="device-request" className="device-request" color="blue" variant="light">
+					<Group justify="space-between" wrap="nowrap">
+						<Text size="sm">
+							{name} is looking for a USB device. Browsers only let a page use devices
+							you choose.
+						</Text>
+						<Group gap="xs" wrap="nowrap">
+							<Button
+								id="choose-usb-device"
+								size="xs"
+								onClick={() => void chooseUsbDevice()}
+							>
+								Choose device
+							</Button>
+							<Button
+								size="xs"
+								variant="subtle"
+								color="gray"
+								onClick={() => neutron.dismissDeviceRequest()}
+							>
+								Not now
+							</Button>
+						</Group>
+					</Group>
+				</Alert>
 			)}
 			{contextMenu && neutron && (
 				<ContextMenu menu={contextMenu} onClick={(id) => neutron.clickContextMenu(id)} />
