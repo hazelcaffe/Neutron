@@ -18,7 +18,7 @@ export interface FetchResponse {
 export interface FetchHandler {
 	trackedClients: Map<string, { clientId: string; history: { url: string }[] }>;
 	handleFetch(request: object): Promise<FetchResponse>;
-	hooks: { fetch: { request: object } };
+	hooks: { fetch: { request: object; preresponse: object } };
 }
 export type ScramjetAPI = typeof import("@mercuryworkshop/scramjet") & {
 	ScramjetFetchHandler: new (init: {
@@ -110,4 +110,32 @@ export function updateCookies(
 	cookies: { url: URL | string; cookie: string }[],
 ): void {
 	for (const entry of cookies) jar.setCookies(entry.cookie, new URL(entry.url));
+}
+/** Cookie writes travel between documents of one proxy session and the
+ * service worker as this message; the receiver acknowledges on `ports[0]`. */
+export const PROXY_COOKIES = "proxy-cookies";
+export interface ProxyCookies {
+	type: typeof PROXY_COOKIES;
+	id: string;
+	cookies: { url: string; cookie: string }[];
+}
+// A live document applies a cookie message immediately. Don't let a frozen or
+// blocked one (e.g. waiting on a synchronous XHR) stall anyone else for long.
+const COOKIE_SYNC_TIMEOUT = 1000;
+export function acknowledged(post: (port: MessagePort) => void): Promise<void> {
+	const { port1, port2 } = new MessageChannel();
+	return new Promise((resolve) => {
+		const done = () => {
+			clearTimeout(timer);
+			port1.close();
+			resolve();
+		};
+		const timer = setTimeout(done, COOKIE_SYNC_TIMEOUT);
+		port1.onmessage = done;
+		try {
+			post(port2);
+		} catch {
+			done();
+		}
+	});
 }

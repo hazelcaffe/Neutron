@@ -23,6 +23,10 @@ import type { AppStorage } from "./storage";
 interface HostedWindow {
 	browser?: ProxySession;
 	returnTo?: number;
+	/** The window that called window.open() for this Browser tab. */
+	opener?: Window;
+	/** The window.open() target name that addresses this Browser tab. */
+	popupName?: string;
 	menuVisible: boolean;
 	menu?: MenuData[];
 	isView?: boolean;
@@ -126,6 +130,20 @@ export class RuntimeHost {
 				return () => window?.listeners.delete(listener);
 			},
 			proxyURL: (url) => this.proxy.encode(url),
+			// Called synchronously by Browser tab documents (window.open must return
+			// a window). A document's own window identifies its tab.
+			browser: {
+				open: (source, url, name, opener) => this.openPopup(source, url, name, opener),
+				opener: (tab) => this.browserTab(tab)?.opener ?? null,
+				disown: (tab) => {
+					const item = this.browserTab(tab);
+					if (item) item.opener = undefined;
+				},
+				close: (tab) => {
+					const item = this.browserTab(tab);
+					if (item) this.closeBrowser(item);
+				},
+			},
 		};
 		window.__neutron = bridge;
 		navigator.serviceWorker?.addEventListener("message", (event) => {
@@ -148,26 +166,6 @@ export class RuntimeHost {
 				return;
 			}
 			this.worker.postMessage(probe, [port]);
-		});
-		window.addEventListener("message", (event) => {
-			if (event.origin !== location.origin || event.data?.type !== "neutron-browser-action")
-				return;
-			const tab = [...this.windows.values()].find(
-				(item) =>
-					item.browser?.id === event.data.session &&
-					item.frame.contentWindow === event.source,
-			);
-			if (!tab?.browser) return;
-			if (event.data.action === "close") this.closeBrowser(tab);
-			if (event.data.action === "open" && typeof event.data.url === "string") {
-				const target = URL.parse(event.data.url);
-				if (!target) return;
-				if (/^https?:$/.test(target.protocol))
-					void this.openBrowser(target, tab.id).catch(() =>
-						this.events.toast("Could not open browser link."),
-					);
-				else void this.returnLink(tab, target);
-			}
 		});
 		new ResizeObserver(() => {
 			for (const item of this.windows.values()) {
@@ -785,19 +783,68 @@ export class RuntimeHost {
 			throw new Error("Invalid browser destination");
 		const browser = await this.proxy.browserSession();
 		if (this.stopping) throw new Error("Application is stopping");
+		this.browserWindow(browser, returnTo, url);
+	}
+	private browserWindow(browser: ProxySession, returnTo?: number, url?: URL): HostedWindow {
 		const id = this.nextBrowserId--;
 		this.createWindow(
 			id,
-			{ title: `Browser · ${url.host}`, autoHideMenuBar: true },
+			{ title: url ? `Browser · ${url.host}` : "Browser", autoHideMenuBar: true },
 			false,
 			browser,
 		);
 		const item = this.getWindow(id);
 		item.returnTo = returnTo;
+		if (url) this.browse(item, url);
+		else {
+			item.loading = "loaded";
+			this.syncWindows();
+		}
+		return item;
+	}
+	private browse(item: HostedWindow, url: URL): void {
+		if (!item.browser) return;
 		item.url = url.origin;
 		item.loading = "loading";
-		item.frame.src = encodeProxyURL(browser, url.href);
+		item.error = undefined;
+		item.frame.src = encodeProxyURL(item.browser, url.href);
 		this.syncWindows();
+	}
+	/** The Browser tab whose top-level document is `view`. */
+	private browserTab(view: Window): HostedWindow | undefined {
+		return [...this.windows.values()].find(
+			(item) => item.browser && item.frame.contentWindow === view,
+		);
+	}
+	/** window.open() from any document in a Browser tab, including its frames. */
+	private openPopup(source: Window, url: string, name: string, opener: boolean): Window | null {
+		let tab: HostedWindow | undefined;
+		for (let view = source; !tab; view = view.parent) {
+			tab = this.browserTab(view);
+			if (view.parent === view) break;
+		}
+		if (!tab?.browser || !this.worker || this.stopping) return null;
+		const target = url ? URL.parse(url) : null;
+		if (url && (!target || target.username || target.password)) return null;
+		if (target && !/^https?:$/.test(target.protocol)) {
+			void this.returnLink(tab, target);
+			return null;
+		}
+		const named =
+			name && !/^_blank$/i.test(name)
+				? [...this.windows.values()].find(
+						(item) => item.browser === tab.browser && item.popupName === name,
+					)
+				: undefined;
+		if (named) {
+			if (target) this.browse(named, target);
+			this.activate(named);
+			return opener ? named.frame.contentWindow : null;
+		}
+		const popup = this.browserWindow(tab.browser, tab.id, target ?? undefined);
+		if (name && !/^_blank$/i.test(name)) popup.popupName = name;
+		if (opener) popup.opener = source;
+		return opener ? popup.frame.contentWindow : null;
 	}
 	private closeBrowser(tab: HostedWindow): void {
 		const active = this.activeWindow === tab.id;
