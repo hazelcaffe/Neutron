@@ -1,4 +1,4 @@
-import { type AppWindow, type MenuData, RuntimeHost } from "./core/host";
+import { type AppWindow, type ContextMenuData, type MenuData, RuntimeHost } from "./core/host";
 import type { PreparedBundle } from "./core/importer";
 import { PageProxy } from "./core/proxy";
 import { initializeRuntimeWorker } from "./core/runtime-worker";
@@ -25,6 +25,9 @@ export interface NeutronEvents {
 	windows: readonly AppWindow[];
 	/** The application menu for the active window (empty when it has none). */
 	menu: readonly MenuData[];
+	/** A popup menu the app opened with Menu.popup() (null once it closes).
+	 * Answer it with clickContextMenu(). */
+	contextMenu: ContextMenuData | null;
 	/** Notifications, tray changes and progress the app would show natively. */
 	notification: string;
 	/** The app opened (true) or closed (false) its developer tools. */
@@ -178,6 +181,7 @@ export class Neutron {
 				this.menuItems = items;
 				this.emit("menu", items);
 			},
+			contextMenu: (menu) => this.emit("contextMenu", menu),
 			windows: (items) => {
 				this.windowList = items;
 				this.emit("windows", items);
@@ -349,6 +353,10 @@ export class Neutron {
 	/** Activates an application menu item for the active window. */
 	clickMenu(id: string): void {
 		this.host.menuClick(id);
+	}
+	/** Activates an item of the open popup menu, or dismisses it (no id). */
+	clickContextMenu(id?: string): void {
+		this.host.contextMenuClick(id);
 	}
 
 	/** Settings saved in browser storage; Neutron itself only reads them when asked. */

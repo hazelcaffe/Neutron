@@ -58,10 +58,17 @@ export interface HostEvents {
 	log(entry: LogEntry): void;
 	state(state: "starting" | "running" | "stopped" | "failed"): void;
 	menu(items: MenuData[]): void;
+	contextMenu(menu: ContextMenuData | null): void;
 	console(open: boolean): void;
 	toast(message: string): void;
 	files(filename: string): void;
 	windows(items: AppWindow[]): void;
+}
+/** A popup (context) menu at page coordinates, from Menu.popup(). */
+export interface ContextMenuData {
+	items: MenuData[];
+	x: number;
+	y: number;
 }
 export interface MenuData {
 	id: string;
@@ -93,6 +100,9 @@ export class RuntimeHost {
 	private abort = new AbortController();
 	private shortcuts: string[] = [];
 	private appMenu: MenuData[] = [];
+	/** Last pointer position inside an app frame, in page coordinates. */
+	private pointer = { x: 0, y: 0 };
+	private contextMenuOpen = false;
 	private readonly emptyMenu: MenuData[] = [];
 	private displayedMenu?: MenuData[];
 	private wake?: WakeLockSentinel;
@@ -181,6 +191,30 @@ export class RuntimeHost {
 		}).observe(this.desktop);
 		for (const query of ["(prefers-color-scheme: dark)", "(prefers-reduced-motion: reduce)"])
 			matchMedia(query).addEventListener("change", () => this.sendTheme());
+		// Electron windows blur when the user switches to another application
+		// and focus when they come back. The browser equivalent is this page
+		// (including its app iframes) losing and regaining focus. A frame taking
+		// focus from the shell also blurs `window`, so check document.hasFocus().
+		let pageFocused = true;
+		let focusPoll: ReturnType<typeof setInterval> | undefined;
+		const updateFocus = () => {
+			const focused = document.hasFocus() && document.visibilityState === "visible";
+			if (focused === pageFocused) return;
+			pageFocused = focused;
+			clearInterval(focusPoll);
+			// Focus returning to an iframe does not fire on this window.
+			if (!focused) focusPoll = setInterval(updateFocus, 500);
+			const id = this.activeWindow;
+			if (this.worker && id !== undefined && id > 0)
+				this.send({
+					type: "window-event",
+					windowId: id,
+					event: focused ? "focus" : "blur",
+				});
+		};
+		addEventListener("blur", () => setTimeout(updateFocus, 0));
+		addEventListener("focus", updateFocus);
+		document.addEventListener("visibilitychange", updateFocus);
 		let activity = 0;
 		for (const event of ["pointermove", "keydown"])
 			document.addEventListener(
@@ -377,6 +411,15 @@ export class RuntimeHost {
 	}
 	menuClick(id: string): void {
 		this.send({ type: "menu-click", id, windowId: this.activeWindow });
+	}
+	/** Activates (id) or dismisses (undefined) the open popup menu. */
+	contextMenuClick(id?: string): void {
+		if (!this.contextMenuOpen) return;
+		this.contextMenuOpen = false;
+		this.events.contextMenu(null);
+		this.send(
+			id === undefined ? { type: "menu-dismiss" } : { type: "menu-click", id, popup: true },
+		);
 	}
 	private syncMenu(): void {
 		const current = this.windows.get(this.activeWindow ?? -1);
@@ -637,6 +680,24 @@ export class RuntimeHost {
 				this.appMenu = message.items as MenuData[];
 				this.syncMenu();
 				break;
+			case "context-menu": {
+				// Menu.popup() opens at the given window position or the pointer.
+				const owner = this.windows.get(Number(message.windowId));
+				const rect = owner?.frame.getBoundingClientRect();
+				const at =
+					rect && typeof message.x === "number" && typeof message.y === "number"
+						? { x: rect.left + message.x, y: rect.top + Number(message.y) }
+						: this.pointer;
+				this.contextMenuOpen = true;
+				this.events.contextMenu({ items: message.items as MenuData[], ...at });
+				break;
+			}
+			case "menu-close":
+				if (this.contextMenuOpen) {
+					this.contextMenuOpen = false;
+					this.events.contextMenu(null);
+				}
+				break;
 			case "shortcuts":
 				this.shortcuts = message.keys as string[];
 				break;
@@ -709,6 +770,18 @@ export class RuntimeHost {
 		element.append(frame);
 		this.desktop.append(element);
 		frame.addEventListener("load", () => {
+			// Pointer events inside the frame never reach this document; track
+			// them for Menu.popup(), which opens at the cursor by default.
+			try {
+				const track = (event: MouseEvent) => {
+					const rect = frame.getBoundingClientRect();
+					this.pointer = { x: rect.left + event.clientX, y: rect.top + event.clientY };
+				};
+				frame.contentWindow?.addEventListener("pointerdown", track, true);
+				frame.contentWindow?.addEventListener("contextmenu", track, true);
+			} catch {
+				/* Cross-origin document. */
+			}
 			if (hosted.browser) {
 				let href: string | undefined;
 				try {

@@ -1,5 +1,5 @@
 import { Alert, Button, CloseButton, Group, Loader, Menu, Stack, Text, Title } from "@mantine/core";
-import type { AppWindow, LogEntry, MenuData, Neutron } from "@neutron/runtime";
+import type { AppWindow, ContextMenuData, LogEntry, MenuData, Neutron } from "@neutron/runtime";
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export function Home(props: {
@@ -204,6 +204,37 @@ function MenuItems(props: { items: MenuData[]; onClick(id: string): void }) {
 				</Menu.Item>
 			);
 		});
+}
+
+/** A menu the app opened with Menu.popup(), at the pointer. */
+export function ContextMenu(props: { menu: ContextMenuData; onClick(id?: string): void }) {
+	useEffect(() => {
+		// A click inside an app iframe blurs this document instead.
+		const dismiss = () => props.onClick();
+		addEventListener("blur", dismiss);
+		return () => removeEventListener("blur", dismiss);
+	}, [props.onClick]);
+	return (
+		<Menu
+			opened
+			onChange={(opened) => !opened && props.onClick()}
+			position="bottom-start"
+			offset={0}
+			shadow="md"
+			width={260}
+			withinPortal
+		>
+			<Menu.Target>
+				<div
+					className="context-menu-anchor"
+					style={{ left: props.menu.x, top: props.menu.y }}
+				/>
+			</Menu.Target>
+			<Menu.Dropdown id="context-menu" aria-label="Context menu">
+				<MenuItems items={props.menu.items} onClick={(id) => props.onClick(id)} />
+			</Menu.Dropdown>
+		</Menu>
+	);
 }
 
 /** The app's own Electron menu bar, shown only when enabled in Settings. */

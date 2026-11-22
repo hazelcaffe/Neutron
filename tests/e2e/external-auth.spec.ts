@@ -28,7 +28,7 @@ test("system-browser sign-in stays proxied and returns a registered deep link to
 		const url = `http://127.0.0.1:${addr.port}/login`;
 		const archive = createAsar({
 			"package.json": '{"name":"quill","version":"1","main":"main.cjs"}',
-			"main.cjs": `const {app,BrowserWindow,shell,ipcMain}=require('electron');let w;app.whenReady().then(()=>{w=new BrowserWindow({webPreferences:{preload:'/app/preload.cjs'}});app.setAsDefaultProtocolClient('quill-demo');app.once('open-url',(event,target)=>w.webContents.send('back',target));app.requestSingleInstanceLock();app.on('second-instance',(_e,argv)=>w.webContents.send('back','instance: '+argv.at(-1)));ipcMain.handle('login',()=>shell.openExternal(${JSON.stringify(url)}));w.loadFile('index.html')});`,
+			"main.cjs": `const {app,BrowserWindow,shell,ipcMain}=require('electron');let w;app.whenReady().then(()=>{w=new BrowserWindow({webPreferences:{preload:'/app/preload.cjs'}});app.setAsDefaultProtocolClient('quill-demo');app.once('open-url',(event,target)=>w.webContents.send('back','url: '+target));app.requestSingleInstanceLock();let n=0;app.on('second-instance',(_e,argv)=>w.webContents.send('back',(++n)+' instance: '+argv.at(-1)));ipcMain.handle('login',()=>shell.openExternal(${JSON.stringify(url)}));w.loadFile('index.html')});`,
 			"preload.cjs": `const {contextBridge,ipcRenderer,shell}=require('electron');contextBridge.exposeInMainWorld('appOnly',{login:()=>ipcRenderer.invoke('login'),rendererLogin:()=>shell.openExternal(${JSON.stringify(url)}),receive:func=>ipcRenderer.on('back',(_,v)=>func(v))});`,
 			"index.html": `<!doctype html><button onclick="appOnly.login()">Sign in with browser</button><button onclick="appOnly.rendererLogin()">Open from preload</button><output></output><script>appOnly.receive(v=>document.querySelector('output').textContent=v)</script>`,
 		});
@@ -64,12 +64,14 @@ test("system-browser sign-in stays proxied and returns a registered deep link to
 			.getByRole("button", { name: /close/i })
 			.click();
 		await browser.getByText("Return to app").click();
-		await expect(app.locator("output")).toHaveText(callback);
+		// Linux delivers the link as the running single instance's argv (macOS
+		// open-url delivery is covered by protocol-launch.spec.ts).
+		await expect(app.locator("output")).toHaveText(`1 instance: ${callback}`);
 		await expect(app.getByText("Sign in with browser")).toBeVisible();
 		await expect(page.locator("iframe[data-neutron-browser]")).toHaveCount(0);
 		await app.getByText("Open from preload").click();
 		await browser.getByText("Return to app").click();
-		await expect(app.locator("output")).toHaveText(`instance: ${callback}`);
+		await expect(app.locator("output")).toHaveText(`2 instance: ${callback}`);
 		expect(popups).toBe(0);
 	} finally {
 		fixture.closeAllConnections();

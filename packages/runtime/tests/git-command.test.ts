@@ -92,6 +92,10 @@ it("persists user config and distinguishes absent keys from unsupported flags/co
 	expect(await exec(["config", "--get", "user.email"])).toEqual({ code: 1, out: "", err: "" });
 	expect(await exec(["push"])).toMatchObject({
 		code: 128,
+		err: expect.stringContaining("not a git repository"),
+	});
+	expect(await exec(["rebase", "main"])).toMatchObject({
+		code: 128,
 		err: expect.stringContaining("unsupported git command"),
 	});
 	expect(await exec(["clone", "--mirror", url])).toMatchObject({ code: 128 });
@@ -114,9 +118,10 @@ it("rejects credentials, non-HTTP URLs, disallowed transports, and HTTP failures
 		code: 128,
 	});
 	expect(calls).toBe(0);
+	// No credential helper can run, so a 401 ends like git with prompts off.
 	expect(await exec(["clone", url, "repo"])).toMatchObject({
 		code: 128,
-		err: expect.stringContaining("401"),
+		err: expect.stringContaining("could not read Username for 'http://127.0.0.1:4262'"),
 	});
 	expect(calls).toBe(1);
 	expect(vfs.fs.existsSync("/app/repo")).toBe(false);

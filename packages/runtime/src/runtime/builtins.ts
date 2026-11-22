@@ -282,6 +282,8 @@ export function makeBuiltins(
 	};
 	Object.assign(process, { report });
 	const readline = readlineModules();
+	// os.tmpdir() always names an existing directory on a real system.
+	if (!vfs.fs.existsSync("/tmp")) vfs.fs.mkdirSync("/tmp", { recursive: true });
 	if (process.platform === "linux" && !vfs.fs.existsSync("/etc/os-release")) {
 		vfs.fs.mkdirSync("/etc", { recursive: true });
 		vfs.fs.writeFileSync(
@@ -357,7 +359,14 @@ export function makeBuiltins(
 		freemem: () => (Number(Reflect.get(navigator, "deviceMemory")) || 4) * 1024 ** 3,
 		loadavg: () => [0, 0, 0],
 		machine: () => (process.arch === "arm64" ? "aarch64" : "x86_64"),
-		release: () => "1.0",
+		// Kernel/OS build numbers of the emulated targets: Windows 10 22H2,
+		// macOS 14 (Darwin 23) and Debian 12's kernel series.
+		release: () =>
+			process.platform === "win32"
+				? "10.0.19045"
+				: process.platform === "darwin"
+					? "23.6.0"
+					: "6.1.0-28-amd64",
 		homedir: () => "/home/user",
 		tmpdir: () => "/tmp",
 		hostname: () => "neutron",

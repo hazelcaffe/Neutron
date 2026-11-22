@@ -49,6 +49,13 @@ code {
 	padding: 4px 8px;
 	border-bottom: 1px solid var(--mantine-color-default-border);
 }
+/* Zero-size anchor for Menu.popup() menus, placed at the pointer. */
+.context-menu-anchor {
+	position: fixed;
+	width: 0;
+	height: 0;
+	pointer-events: none;
+}
 #window-tablist {
 	display: flex;
 	gap: 4px;
