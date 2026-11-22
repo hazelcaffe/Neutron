@@ -177,6 +177,30 @@ export class RuntimeHost {
 		}).observe(this.desktop);
 		for (const query of ["(prefers-color-scheme: dark)", "(prefers-reduced-motion: reduce)"])
 			matchMedia(query).addEventListener("change", () => this.sendTheme());
+		// Electron windows blur when the user switches to another application
+		// and focus when they come back. The browser equivalent is this page
+		// (including its app iframes) losing and regaining focus. A frame taking
+		// focus from the shell also blurs `window`, so check document.hasFocus().
+		let pageFocused = true;
+		let focusPoll: ReturnType<typeof setInterval> | undefined;
+		const updateFocus = () => {
+			const focused = document.hasFocus() && document.visibilityState === "visible";
+			if (focused === pageFocused) return;
+			pageFocused = focused;
+			clearInterval(focusPoll);
+			// Focus returning to an iframe does not fire on this window.
+			if (!focused) focusPoll = setInterval(updateFocus, 500);
+			const id = this.activeWindow;
+			if (this.worker && id !== undefined && id > 0)
+				this.send({
+					type: "window-event",
+					windowId: id,
+					event: focused ? "focus" : "blur",
+				});
+		};
+		addEventListener("blur", () => setTimeout(updateFocus, 0));
+		addEventListener("focus", updateFocus);
+		document.addEventListener("visibilitychange", updateFocus);
 		let activity = 0;
 		for (const event of ["pointermove", "keydown"])
 			document.addEventListener(
