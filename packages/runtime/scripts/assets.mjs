@@ -87,6 +87,20 @@ export async function buildAssets(out = defaultAssetsDir) {
 						'if(!A.getFlag("syncxhr"))return console.warn("ignoring request - sync xhr disabled in flags"),I.return(void 0);',
 						'if(!A.flagEnabled("syncxhr"))return I.return(globalThis.__neutronSyncXHR(I.this,B,I.this[Q],I.args[0]));',
 					],
+					// Storage's named properties are visible only for stored keys, like
+					// Chromium: `localStorage.missing` is undefined, not getItem()'s null,
+					// and prototype members such as getItem remain `in` the object.
+					// Webpack-style `m[prop] !== undefined` export filters depend on this.
+					[
+						"storage-named-properties-get",
+						'return(0,C.rF)(I,g);return I.getItem(A.url.host+"@"+g)}}',
+						'return(0,C.rF)(I,g);return I.getItem(A.url.host+"@"+g)??void 0}}',
+					],
+					[
+						"storage-named-properties-has",
+						'has:(I,g)=>null!==I.getItem(A.url.host+"@"+g),',
+						'has:(I,g)=>"symbol"==typeof g||g in Object.getPrototypeOf(I)?g in Object.getPrototypeOf(I):null!==I.getItem(A.url.host+"@"+g),',
+					],
 					[
 						"xhr-reuse",
 						'A.Proxy("XMLHttpRequest.prototype.open",{apply(I){I.args[1]&&',
