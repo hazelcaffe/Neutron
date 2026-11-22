@@ -2,6 +2,7 @@ import { Badge, Button, Menu, NativeSelect, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import {
 	type AppWindow,
+	type ContextMenuData,
 	createAsar,
 	errorText,
 	type ImportChoice,
@@ -15,7 +16,15 @@ import {
 	type RuntimeState,
 } from "@neutron/runtime";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppMenuBar, Home, LogPanel, StageNote, WindowTabs, windowLabel } from "./components";
+import {
+	AppMenuBar,
+	ContextMenu,
+	Home,
+	LogPanel,
+	StageNote,
+	WindowTabs,
+	windowLabel,
+} from "./components";
 import {
 	FilesDialog,
 	ImportProgress,
@@ -62,6 +71,7 @@ export function App() {
 	const [selected, setSelected] = useState("");
 	const [windows, setWindows] = useState<readonly AppWindow[]>([]);
 	const [menu, setMenu] = useState<readonly MenuData[]>([]);
+	const [contextMenu, setContextMenu] = useState<ContextMenuData | null>(null);
 	const [settings, setSettings] = useState<RuntimeSettings>({ wisp: "" });
 	const [localRelay, setLocalRelay] = useState("");
 	const [errors, setErrors] = useState(0);
@@ -117,6 +127,7 @@ export function App() {
 					}),
 					instance.on("windows", setWindows),
 					instance.on("menu", setMenu),
+					instance.on("contextMenu", setContextMenu),
 					instance.on("log", (entry) => {
 						if (entry.level === "error") setErrors((count) => count + 1);
 					}),
@@ -409,6 +420,9 @@ export function App() {
 			)}
 			{settings.showAppMenu && menu.length > 0 && neutron && (
 				<AppMenuBar items={menu} onClick={(id) => neutron.clickMenu(id)} />
+			)}
+			{contextMenu && neutron && (
+				<ContextMenu menu={contextMenu} onClick={(id) => neutron.clickContextMenu(id)} />
 			)}
 			<div className="stage">
 				<main id="desktop" ref={viewport} aria-label="Application viewport" />

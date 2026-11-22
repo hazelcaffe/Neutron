@@ -72,7 +72,7 @@ interface MenuTemplate {
 	click?: (item: MenuItem, window: unknown, event: unknown) => void;
 }
 /** Electron's Menu instance shape; the runtime's Menu class extends it. */
-class MenuModel {
+class MenuModel extends EventEmitter {
 	items: MenuItem[] = [];
 	append(item: MenuItem): void {
 		this.items.push(item);
@@ -1042,13 +1042,36 @@ export function createElectron(hooks: Hooks) {
 		static getApplicationMenu(): Menu | null {
 			return applicationMenu;
 		}
-		popup(): void {
-			Menu.setApplicationMenu(this);
+		/** Shows a context menu at the pointer (or options.x/y in the window). */
+		popup(
+			options: { window?: BrowserWindow; x?: number; y?: number; callback?: () => void } = {},
+		): void {
+			finishPopup();
+			const window = options.window ?? BrowserWindow.getFocusedWindow() ?? undefined;
+			popup = { menu: this, window, callback: options.callback };
+			this.emit("menu-will-show", { preventDefault() {} });
+			hooks.send({
+				type: "context-menu",
+				windowId: window?.id,
+				x: options.x,
+				y: options.y,
+				items: this.items.map((item) => item.serialize()),
+			});
 		}
 		closePopup(): void {
+			if (popup?.menu !== this) return;
 			hooks.send({ type: "menu-close" });
+			finishPopup();
 		}
 	}
+	let popup: { menu: Menu; window?: BrowserWindow; callback?: () => void } | undefined;
+	const finishPopup = () => {
+		const done = popup;
+		popup = undefined;
+		if (!done) return;
+		done.menu.emit("menu-will-close", { preventDefault() {} });
+		done.callback?.();
+	};
 	MenuItem.createMenu = (template) => Menu.buildFromTemplate(template);
 	MenuItem.executeRole = (role, target) => {
 		const window = target instanceof BrowserWindow ? target : BrowserWindow.getFocusedWindow();
@@ -1506,6 +1529,18 @@ export function createElectron(hooks: Hooks) {
 			} else {
 				window.webContents.emit(event, {}, ...((message.args as unknown[]) || []));
 				if (event === "did-finish-load") window.emit("ready-to-show");
+			}
+		} else if (message.type === "menu-dismiss") finishPopup();
+		else if (message.type === "menu-click" && message.popup) {
+			// Electron runs the item's click handler, then closes the menu and
+			// calls popup()'s callback.
+			const open = popup;
+			const item = open?.menu.getMenuItemById(String(message.id));
+			const target = open?.window ?? BrowserWindow.getFocusedWindow() ?? undefined;
+			try {
+				if (item?.enabled) item.click({ preventDefault() {} }, target, target?.webContents);
+			} finally {
+				finishPopup();
 			}
 		} else if (message.type === "menu-click") {
 			const menu = window?.menu === undefined ? applicationMenu : window.menu;

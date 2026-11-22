@@ -13,7 +13,7 @@
 
 export { createAsar } from "./core/asar";
 export { capabilities, capability } from "./core/compatibility";
-export type { AppWindow, MenuData } from "./core/host";
+export type { AppWindow, ContextMenuData, MenuData } from "./core/host";
 export {
 	type ImportCandidate,
 	type ImportChoice,
