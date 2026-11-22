@@ -26,6 +26,8 @@ The active app fills the viewport without window borders or a host title bar. Wh
 ### Project layout
 
 - **`packages/runtime`** (`@neutron/runtime`): the compatibility layer, i.e. the actual project, as a library with no UI. It exposes a `Neutron` class (import, run, stop, windows, menus, logs and files) and a Vite plugin that serves its assets. See [packages/runtime/README.md](packages/runtime/README.md) for the API.
+- **`packages/libsignal-wasm`**: the recipe and patches for Signal's libsignal built for WebAssembly.
+- **`packages/libcurl.js`**: libcurl.js 0.7.5 rebuilt with per-request trusted roots.
 - **`src/`**: the Neutron app, a small React + [Mantine](https://mantine.dev) UI. It imports only `@neutron/runtime`'s public entry point, and Biome's `noRestrictedImports` rule rejects deep imports into the package.
 
 Set **Settings → Platform** to match the imported distribution (Linux, Windows, or macOS). This selects process/OS metadata and default path semantics for the next launch. The filesystem remains browser-backed on every platform.
@@ -99,7 +101,7 @@ Vite dev/preview set them, and `public/_headers` supplies the equivalent for hos
 
 Without a local relay (for example on GitHub Pages), the app uses the public relay **`wss://anura.pro/`**. Builds can choose a different default with `VITE_NEUTRON_RELAY`, and **Settings → Wisp relay URL** overrides it. A public relay sees which hosts and ports apps connect to, and the content of unencrypted connections; HTTPS and other TLS stay encrypted end to end, because TLS runs in the browser. The dev relay is not included in `dist/`. Its WebSocket upgrades are restricted to the dev origin; it permits local/private destinations for development. It carries connections only—uploaded application code and files still execute/stay in the browser.
 
-- HTTP, HTTPS, WebSocket, and TLS connections use **libcurl.js**, with TLS performed in the browser.
+- HTTP, HTTPS, WebSocket, and TLS connections use **libcurl.js**, with TLS performed in the browser. A request's own trusted roots (Node's `ca` on `https.request`, `https.Agent` and `tls.connect`) replace the public bundle for that request, as in Node. This needs a small addition to libcurl.js, so `packages/libcurl.js` holds a rebuild of 0.7.5 with that patch.
 - The network transport and raw outgoing TCP/UDP sockets use **wisp-js**.
 - Remote BrowserWindows, embedded frames, and remote nested pages use **Scramjet** over its libcurl transport.
 - Local renderer `fetch`, WebSocket, and service-worker-intercepted external resources use these transports as well.
@@ -167,6 +169,16 @@ The live inventory is in `packages/runtime/src/core/compatibility.ts` (exported 
 
 The WASM module is loaded only for apps that ship this addon.
 
+**libsignal (Signal):** Signal does its cryptography and its connections to Signal's servers in libsignal, a Rust native addon. Neutron runs libsignal's own source (0.106.2, the version Signal Desktop 8.36 ships) compiled to WebAssembly with threads and loaded through [emnapi](https://github.com/toyobayashi/emnapi); see [packages/libsignal-wasm](packages/libsignal-wasm/README.md) for the patches and build.
+
+- libsignal's connections run over a TCP transport Neutron provides through Wisp. TLS and certificate pinning stay inside libsignal.
+- In a renderer, the page's own scripts wait until the module is instantiated, because a main thread can't instantiate a module this large synchronously.
+- Signal reaches **Link a device** with a working QR code that refreshes.
+- Linking itself hasn't been tested yet (it needs a phone with a Signal account).
+- RingRTC (calls) has no WebAssembly build and still gets the native-addon fallback.
+
+`pnpm build` downloads the published module (SHA-256 checked) unless `packages/libsignal-wasm/dist` has a local build; without it, Signal gets the fallback as before.
+
 AsyncLocalStorage does not automatically propagate through arbitrary native Promise chains. DNS queries use Cloudflare's JSON DoH service rather than the host OS resolver. Readline provides stream-oriented compatibility, not a full terminal editor. `http2`, Node's `node:sqlite`, `inspector`, `cluster`, `repl`, `wasi`, and `trace_events` currently expose logged fallbacks. Their presence in `module.builtinModules` does not imply a working native backend.
 
 ### Unpacked files
@@ -210,7 +222,7 @@ Initial imports use bounded parallel OPFS writes and transfer buffers from the i
 
 ## Current boundaries
 
-- Native `.node` execution, arbitrary OS binaries/shell commands, real OS window handles, Chromium extensions/CDP, OS-global hooks, and native updater installation are not available. Permissive mode substitutes API defaults/no-ops, which may let startup proceed but cannot reproduce these operations.
+- Native `.node` execution (other than the addons rebuilt for WebAssembly: SQLCipher and libsignal), arbitrary OS binaries/shell commands, real OS window handles, Chromium extensions/CDP, OS-global hooks, and native updater installation are not available. Permissive mode substitutes API defaults/no-ops, which may let startup proceed but cannot reproduce these operations.
 - BrowserWindow/preload/contextBridge are API emulations. `process.contextIsolated` tells preloads whether to use `contextBridge` or publish to the shared window. This separation of preload globals does **not** reproduce Chromium's isolated worlds or Electron process security. Application renderers share the runtime origin; uploaded code must be trusted.
 - `safeStorage` protects stored ciphertext with a key in the same app's OPFS. It is not an OS credential vault, and existing native Electron ciphertext cannot be decrypted.
 - Scramjet pages use an app-scoped cookie store. The Electron HTTP session cookie jars are separately partitioned; full Chromium partition/storage isolation and a unified page/session layer are not implemented.
