@@ -29,11 +29,14 @@
 		}
 	},
 	"dependencies": {
+		"@emnapi/core": "1.11.3",
+		"@emnapi/runtime": "1.11.3",
 		"@journeyapps/wa-sqlite": "2.0.10",
 		"@mercuryworkshop/proxy-transports": "1.0.2",
 		"@mercuryworkshop/scramjet": "2.0.67-alpha.2",
 		"@mercuryworkshop/wisp-js": "^0.5.3",
 		"@pkgjs/parseargs": "^0.11.0",
+		"@tybys/wasm-util": "0.10.5",
 		"@ungap/structured-clone": "^1.4.0",
 		"acorn": "^8.19.0",
 		"acorn-walk": "^8.3.5",
@@ -48,7 +51,7 @@
 		"html-to-image": "^1.11.13",
 		"isomorphic-git": "1.44.17",
 		"jpeg-js": "^0.4.4",
-		"libcurl.js": "0.7.5",
+		"libcurl.js": "workspace:*",
 		"memfs": "^4.80.1",
 		"path-browserify": "^1.0.1",
 		"path-win32": "^1.0.1",

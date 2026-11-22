@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { Readable } from "readable-stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { httpModule } from "../src/runtime/http";
+import { caBundle, httpModule } from "../src/runtime/http";
 
 const server = createServer(async (req, res) => {
 	if (req.url === "/redirect") {
@@ -120,5 +120,17 @@ describe("Node HTTP client over fetch", () => {
 		req.end();
 		await closed;
 		expect(timeout).not.toHaveBeenCalled();
+	});
+});
+
+describe("caBundle", () => {
+	it("joins Node's ca forms into one PEM bundle", () => {
+		const first = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----";
+		const second = "-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----";
+		expect(caBundle(undefined)).toBeUndefined();
+		expect(caBundle([])).toBeUndefined();
+		expect(caBundle(first)).toBe(first);
+		expect(caBundle(Buffer.from(first))).toBe(first);
+		expect(caBundle([first, Buffer.from(second)])).toBe(`${first}\n${second}`);
 	});
 });

@@ -206,6 +206,9 @@ importers:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
+      '@types/pngjs':
+        specifier: 6.0.5
+        version: 6.0.5
       '@types/react':
         specifier: 19.3.0
         version: 19.3.0
@@ -218,6 +221,12 @@ importers:
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
+      jsqr:
+        specifier: 1.4.0
+        version: 1.4.0
+      pngjs:
+        specifier: 7.0.0
+        version: 7.0.0
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -231,8 +240,18 @@ importers:
         specifier: ^8.23.0
         version: 8.23.0(bufferutil@4.2.0)
 
+  packages/libcurl.js: {}
+
+  packages/libsignal-wasm: {}
+
   packages/runtime:
     dependencies:
+      '@emnapi/core':
+        specifier: 1.11.3
+        version: 1.11.3
+      '@emnapi/runtime':
+        specifier: 1.11.3
+        version: 1.11.3
       '@journeyapps/wa-sqlite':
         specifier: 2.0.10
         version: 2.0.10
@@ -248,6 +267,9 @@ importers:
       '@pkgjs/parseargs':
         specifier: ^0.11.0
         version: 0.11.0
+      '@tybys/wasm-util':
+        specifier: 0.10.5
+        version: 0.10.5
       '@ungap/structured-clone':
         specifier: ^1.4.0
         version: 1.4.0
@@ -291,8 +313,8 @@ importers:
         specifier: ^0.4.4
         version: 0.4.4
       libcurl.js:
-        specifier: 0.7.5
-        version: 0.7.5
+        specifier: workspace:*
+        version: link:../libcurl.js
       memfs:
         specifier: ^4.80.1
         version: 4.80.1
@@ -465,11 +487,20 @@ packages:
     engines: {node: '>=22.12.0'}
     hasBin: true
 
+  '@emnapi/core@1.11.3':
+    resolution: {integrity: sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg==}
+
   '@emnapi/core@2.0.0-beta.2':
     resolution: {integrity: sha512-MzCVoWtcg4Pm2B3je5mMvYMvj3MmBKw+fU7vbsJc9/iT8ip6/eYIHo/Dsm/mr+wsHB6SEyJDuxB09Yy6r/8+4A==}
 
+  '@emnapi/runtime@1.11.3':
+    resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
+
   '@emnapi/runtime@2.0.0-beta.2':
     resolution: {integrity: sha512-JcrSPzPvZuNZvJqPTF9Fw25LbOJ8avzFVlaf2grmH4Cku0oGP47tRgqPZadcfj3YoZMHkFVnCYFbQM8I+i5QEw==}
+
+  '@emnapi/wasi-threads@1.2.3':
+    resolution: {integrity: sha512-ELEBe8PsLvvJ6QMr0zLt8ffvOHW/dc1m3CEzNMg7aJUv3bMaoDtw2TXyDAwkYBuroxxuHEwhRTLJSe5sya547g==}
 
   '@emnapi/wasi-threads@2.2.0':
     resolution: {integrity: sha512-JP7OYH38Q7+pyTAe14raZHLQIK7BDKbdwji+Xi3pcd/6QkJYQH3SX4wu6EplGrGJWRepoNzedfm0G3B9Z4e9Rw==}
@@ -1604,8 +1635,8 @@ packages:
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
 
-  libcurl.js@0.7.5:
-    resolution: {integrity: sha512-O7OizjbbSYvAGFkbat3gwih2PXpI4jKTk25SD2tPJnMsmKTU5UIK7x8exbD9DCBFPkL3FEcqYJAvqlELESBmYA==}
+  jsqr@1.4.0:
+    resolution: {integrity: sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==}
 
   lightningcss-android-arm64@1.33.0:
     resolution: {integrity: sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==}
@@ -2288,16 +2319,29 @@ snapshots:
       glob: 14.0.6
       minimatch: 11.0.9
 
+  '@emnapi/core@1.11.3':
+    dependencies:
+      '@emnapi/wasi-threads': 1.2.3
+      tslib: 2.9.1
+
   '@emnapi/core@2.0.0-beta.2':
     dependencies:
       '@emnapi/wasi-threads': 2.2.0
       tslib: 2.9.1
     optional: true
 
+  '@emnapi/runtime@1.11.3':
+    dependencies:
+      tslib: 2.9.1
+
   '@emnapi/runtime@2.0.0-beta.2':
     dependencies:
       tslib: 2.9.1
     optional: true
+
+  '@emnapi/wasi-threads@1.2.3':
+    dependencies:
+      tslib: 2.9.1
 
   '@emnapi/wasi-threads@2.2.0':
     dependencies:
@@ -2686,7 +2730,6 @@ snapshots:
   '@tybys/wasm-util@0.10.5':
     dependencies:
       tslib: 2.9.1
-    optional: true
 
   '@types/chai@5.2.3':
     dependencies:
@@ -3323,7 +3366,7 @@ snapshots:
 
   js-tokens@4.0.0: {}
 
-  libcurl.js@0.7.5: {}
+  jsqr@1.4.0: {}
 
   lightningcss-android-arm64@1.33.0:
     optional: true

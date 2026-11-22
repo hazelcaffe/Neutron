@@ -84,6 +84,23 @@ export interface RequestOptions {
 	timeout?: number;
 	redirect?: RequestRedirect;
 	agent?: Agent | false;
+	/** Trusted roots for this request instead of the default bundle (https). */
+	ca?: unknown;
+}
+/** Node's `ca` option (PEM strings or Buffers, or an array of them) as one PEM bundle. */
+export function caBundle(ca: unknown): string | undefined {
+	if (ca === undefined || ca === null) return;
+	const pem = (Array.isArray(ca) ? ca : [ca])
+		.map((item) =>
+			typeof item === "string"
+				? item
+				: item instanceof Uint8Array
+					? new TextDecoder().decode(item)
+					: "",
+		)
+		.filter(Boolean)
+		.join("\n");
+	return pem || undefined;
 }
 export function validateHeaderName(name: string): void {
 	if (!/^[!#$%&'*+.^_`|~\w-]+$/.test(name))
@@ -119,6 +136,7 @@ class Agent extends EventEmitter {
 			keepAlive?: boolean;
 			maxSockets?: number;
 			maxFreeSockets?: number;
+			ca?: unknown;
 		} = {},
 	) {
 		super();
@@ -181,8 +199,11 @@ class RequestSocket extends Duplex {
 	}
 }
 
+/** Content codings that fetch (libcurl and browsers) decodes. */
+const DECODED = new Set(["gzip", "x-gzip", "deflate", "br"]);
+
 export function httpModule(
-	fetch: (url: string, options: RequestInit) => Promise<Response>,
+	fetch: (url: string, options: RequestInit & { ca?: string }) => Promise<Response>,
 	protocol = "http:",
 	electron = false,
 	loopback?: LoopbackRegistry,
@@ -217,12 +238,25 @@ export function httpModule(
 			this.connection = socket;
 			this.statusCode = response.status;
 			this.statusMessage = response.statusText || STATUS_CODES[response.status] || "";
-			this.headers = Object.fromEntries(response.headers);
+			// Fetch bodies (libcurl's and the browser's) arrive already decoded.
+			// Node's http hands over the encoded bytes with their encoding, so a
+			// client would decode them again; present the body as identity.
+			// Electron's net module, like Chromium, keeps the header.
+			const decoded =
+				!electron &&
+				response.headers
+					.get("content-encoding")
+					?.split(",")
+					.every((value) => DECODED.has(value.trim().toLowerCase()));
+			const kept = [...response.headers].filter(
+				([name]) =>
+					name !== "set-cookie" &&
+					!(decoded && (name === "content-encoding" || name === "content-length")),
+			);
+			this.headers = Object.fromEntries(kept);
 			const cookies = response.headers.getSetCookie();
 			if (cookies.length) this.headers["set-cookie"] = cookies;
-			this.rawHeaders = [...response.headers]
-				.filter(([name]) => name !== "set-cookie")
-				.flat();
+			this.rawHeaders = kept.flat();
 			for (const cookie of cookies) this.rawHeaders.push("set-cookie", cookie);
 			this.url = response.url || req.url.href;
 			this.reader = response.body?.getReader();
@@ -392,12 +426,18 @@ export function httpModule(
 				: undefined;
 			this.chunks = [];
 			// Browser fetch cannot send GET/HEAD bodies; libcurl has the same API.
+			// Request options take precedence over the agent's, as in Node.
+			const ca =
+				this.url.protocol === "https:"
+					? caBundle(this.options.ca ?? (this.agent ? this.agent.options.ca : undefined))
+					: undefined;
 			void fetch(this.url.href, {
 				method: this.method,
 				headers,
 				body,
 				signal: this.controller.signal,
 				redirect: this.options.redirect ?? (electron ? "follow" : "manual"),
+				...(ca && { ca }),
 			}).then(
 				(response) => {
 					if (this.destroyed) {

@@ -5,6 +5,9 @@
 			"**",
 			"!!.cache",
 			"!!packages/runtime/assets",
+			"!!packages/libcurl.js/libcurl.*",
+			"!!packages/libsignal-wasm/dist",
+			"!!packages/libsignal-wasm/wasm-waits/target",
 			"!!dist",
 			"!!test-results",
 			"!!pnpm-lock.yaml"

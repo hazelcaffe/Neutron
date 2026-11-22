@@ -1,0 +1,29 @@
+{
+	"name": "libcurl.js",
+	"version": "0.7.5-neutron.1",
+	"private": true,
+	"description": "libcurl.js 0.7.5 rebuilt with per-request trusted roots (Node's `ca` option); see README.md",
+	"main": "libcurl.mjs",
+	"exports": {
+		".": "./libcurl.mjs",
+		"./libcurl.wasm": "./libcurl.wasm"
+	},
+	"files": [
+		"libcurl.js",
+		"libcurl.mjs",
+		"libcurl.wasm",
+		"LICENSE",
+		"README.md",
+		"patches",
+		"build.sh"
+	],
+	"scripts": {
+		"rebuild": "./build.sh"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ading2210/libcurl.js.git"
+	},
+	"author": "ading2210",
+	"license": "LGPL-3.0-or-later"
+}

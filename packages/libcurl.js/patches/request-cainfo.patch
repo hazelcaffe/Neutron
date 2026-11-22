@@ -1,0 +1,79 @@
+diff --git a/client/exported_funcs.txt b/client/exported_funcs.txt
+index 7659fd2..e54f67b 100644
+--- a/client/exported_funcs.txt
++++ b/client/exported_funcs.txt
+@@ -10,6 +10,7 @@ session_cleanup
+ request_cleanup
+ create_request
+ request_set_proxy
++request_set_cainfo
+ get_version
+ get_cacert
+ get_error_str
+diff --git a/client/javascript/tls_socket.js b/client/javascript/tls_socket.js
+index af953af..3e521bd 100644
+--- a/client/javascript/tls_socket.js
++++ b/client/javascript/tls_socket.js
+@@ -45,6 +45,9 @@ class TLSSocket extends CurlSession {
+ 
+     this.http_handle = this.create_request(this.url, data_callback, finish_callback, headers_callback);
+     _tls_socket_set_options(this.http_handle, +this.options.verbose);
++    if (this.options.cainfo) {
++      c_func_str(_request_set_cainfo, [this.http_handle, this.options.cainfo]);
++    }
+     if (this.options.proxy) {
+       c_func_str(_request_set_proxy, [this.http_handle, this.options.proxy]);
+     }
+diff --git a/client/libcurl/http.c b/client/libcurl/http.c
+index 12cf1d3..45d0df1 100644
+--- a/client/libcurl/http.c
++++ b/client/libcurl/http.c
+@@ -7,6 +7,7 @@
+ 
+ #include "types.h"
+ #include "util.h"
++#include "request.h"
+ 
+ void http_set_options(CURL* http_handle, const char* json_params, const char* body, int body_length) {
+   struct RequestInfo *request_info = get_request_info(http_handle);
+@@ -42,6 +43,10 @@ void http_set_options(CURL* http_handle, const char* json_params, const char* bo
+       }
+     }
+ 
++    if (strcmp(key, "_libcurl_cainfo") == 0 && cJSON_IsString(item)) {
++      request_set_cainfo(http_handle, item->valuestring);
++    }
++
+     if (strcmp(key, "method") == 0 && cJSON_IsString(item)) {
+       curl_easy_setopt(http_handle, CURLOPT_CUSTOMREQUEST, item->valuestring);
+     }
+diff --git a/client/libcurl/request.c b/client/libcurl/request.c
+index fc172fc..58c4472 100644
+--- a/client/libcurl/request.c
++++ b/client/libcurl/request.c
+@@ -59,6 +59,16 @@ CURL* create_request(const char* url, int request_id, DataCallback data_callback
+   return http_handle;
+ }
+ 
++//replace the default CA bundle for this request (PEM, one or more certificates)
++//certificate verification stays enabled; only the trusted roots change
++void request_set_cainfo(CURL* http_handle, const char* pem) {
++  struct curl_blob blob;
++  blob.data = (void*) pem;
++  blob.len = strlen(pem);
++  blob.flags = CURL_BLOB_COPY;
++  curl_easy_setopt(http_handle, CURLOPT_CAINFO_BLOB, &blob);
++}
++
+ void request_cleanup(CURL* http_handle) {
+   struct RequestInfo *request_info = get_request_info(http_handle);
+   curl_easy_cleanup(http_handle);
+diff --git a/client/libcurl/request.h b/client/libcurl/request.h
+index 7530898..54c75a7 100644
+--- a/client/libcurl/request.h
++++ b/client/libcurl/request.h
+@@ -1,3 +1,4 @@
+ #include "curl/multi.h"
+ 
+ void finish_request(CURLMsg *curl_msg);
++void request_set_cainfo(CURL* http_handle, const char* pem);

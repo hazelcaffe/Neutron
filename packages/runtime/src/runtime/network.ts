@@ -4,7 +4,7 @@ import { EventEmitter } from "events";
 import { libcurl } from "libcurl.js";
 import { Duplex } from "readable-stream";
 import { runtimePath } from "../shared/base";
-import { httpModule } from "./http";
+import { caBundle, httpModule } from "./http";
 import type { LoopbackRegistry } from "./loopback";
 import { VirtualServer } from "./optional";
 import { WebSocket as BrowserWebSocket, hostFetch as browserFetch } from "./transport";
@@ -125,9 +125,10 @@ export class Network {
 		if (handler) return handler(new Request(input, init));
 		return this.fetch(input, init, partition);
 	}
+	/** `ca` replaces the default trusted roots for this request (Node's `ca`). */
 	async fetch(
 		input: string | URL | Request,
-		init?: RequestInit,
+		init?: RequestInit & { ca?: string },
 		partition = "default",
 	): Promise<Response> {
 		const url = input instanceof Request ? input.url : String(input);
@@ -158,10 +159,14 @@ export class Network {
 		this.log(
 			`${init?.method || "GET"} ${input instanceof Request ? input.url : String(input)}`,
 		);
+		const { ca, ...options } = init ?? {};
+		// libcurl takes the bundle as CURLOPT_CAINFO_BLOB; verification stays on.
+		// (libcurl.js's typings only declare standard RequestInit members.)
+		const trust = (ca ? { _libcurl_cainfo: ca } : {}) as RequestInit;
 		const intercept = this.interceptors.get(partition);
-		if (!intercept) return session.fetch(input, init);
-		const request = await intercept.before(new Request(input, init));
-		return intercept.after(await session.fetch(request), request);
+		if (!intercept) return session.fetch(input, { ...options, ...trust });
+		const request = await intercept.before(new Request(input, options));
+		return intercept.after(await session.fetch(request, trust), request);
 	}
 	clearPartition(partition: string): void {
 		this.sessions.get(partition)?.close();
@@ -322,7 +327,7 @@ export class Network {
 			private socket?: InstanceType<typeof libcurl.TLSSocket>;
 			private writes: { chunk: Buffer; callback(error?: Error | null): void }[] = [];
 			connect(
-				options: { host?: string; port: number; servername?: string },
+				options: { host?: string; port: number; servername?: string; ca?: unknown },
 				callback?: () => void,
 			): this {
 				if (callback) this.once("secureConnect", callback);
@@ -330,9 +335,11 @@ export class Network {
 					.init()
 					.then(() => {
 						if (this.destroyed) return;
+						const cainfo = caBundle(options.ca);
 						const socket = new libcurl.TLSSocket(
 							options.servername || options.host || "localhost",
 							options.port,
+							cainfo ? { cainfo } : {},
 						);
 						this.socket = socket;
 						socket.onopen = () => {
@@ -382,7 +389,7 @@ export class Network {
 			}
 		}
 		const connect = (
-			options: { host?: string; port: number; servername?: string } | number,
+			options: { host?: string; port: number; servername?: string; ca?: unknown } | number,
 			host?: string | (() => void),
 			callback?: () => void,
 		) =>
