@@ -110,6 +110,9 @@ Upstream v2 passes non-HTTP schemes through to native handlers. `scripts/assets.
 - Synchronous XHR uses a pre-started transport worker after Scramjet resolves the URL. This avoids Chromium bypassing the service worker during a synchronous request. Reopening the XHR clears the previous reply. This bridge requires cross-origin isolation and has a 64 MiB response limit.
 - Worker entry points retain a hierarchical proxy URL so static relative imports and dynamic imports can link in module workers.
 - A hook runs before the JavaScript rewriter. Upstream deletes `debugger` statements, which leaves invalid code after `if (x) debugger` (common in minified bundles, including Signal's). `src/shared/scramjet-debugger.ts` first replaces each such statement with a no-op of the same length, so the output stays valid and source maps keep their offsets.
+- Fragment-only references (`href="#"`, `#section`) stay relative, and empty fragments are preserved. Upstream made them absolute and dropped an empty `#`, so a `href="#"` link (as on Figma's sign-in page) reloaded the page instead of navigating within it.
+- For documents without a conventional `<html><head>`, upstream injects its scripts before `<!DOCTYPE html>`, which switches the page to quirks mode (Google's sign-in pages then lay out wrongly). They are injected after the doctype.
+- The rewritten `target.postMessage(…)` call records the caller's realm, so `event.source` is the sending window for string payloads too. Upstream reported the receiving window, which breaks a popup's `opener.postMessage("…")`.
 
 Neutron supplies raw OPFS/protocol responses and runtime bootstrap hooks; Scramjet owns browser source parsing/rewriting. Proxy sessions and app-scoped cookie jars survive service-worker restarts in browser Cache Storage.
 
