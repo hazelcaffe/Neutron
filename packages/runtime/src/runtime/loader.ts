@@ -4,6 +4,7 @@ import path from "path-browserify";
 import { transform } from "sucrase";
 import { createStub, isStrictCompatibility, noteStub } from "./fallback";
 import type { VirtualFileSystem } from "./filesystem";
+import { keytarAddon } from "./keytar";
 import { nodeProxy } from "./proxies";
 import { signalSQLCipherAddon } from "./sqlcipher";
 import { sqliteNativeAddon } from "./sqlite";
@@ -73,11 +74,19 @@ export class ModuleLoader {
 	) {
 		this.globals = { Proxy: nodeProxy, ...globals };
 		const process = globals.process;
-		if (process && typeof process === "object")
+		if (process && typeof process === "object") {
 			Object.defineProperty(process, "mainModule", {
 				configurable: true,
 				get: () => this.main,
 			});
+			Object.defineProperty(process, "dlopen", {
+				configurable: true,
+				writable: true,
+				value: (module: { exports: unknown }, filename: string) => {
+					module.exports = this.nativeModule(String(filename));
+				},
+			});
+		}
 	}
 	private file(filename: string): boolean {
 		try {
@@ -646,26 +655,32 @@ export class ModuleLoader {
 		}
 		return Module;
 	}
+	/** The browser implementation of a native addon, shared by require() and
+	 * process.dlopen() (which webpack's node-loader uses). */
+	nativeModule(file: string): unknown {
+		const filename = this.vfs.normalizePath(file);
+		if (this.substitutes.has(filename)) return this.substitutes.get(filename);
+		const replacement =
+			this.nativeAddon?.(filename) ??
+			(/(?:^|\/)@signalapp\+sqlcipher\.node$/.test(filename)
+				? signalSQLCipherAddon(this.vfs)
+				: /(?:^|\/)keytar\.node$/.test(filename)
+					? keytarAddon(this.vfs)
+					: sqliteNativeAddon(filename, this.vfs));
+		if (replacement) {
+			this.substitutes.set(filename, replacement as object);
+			return replacement;
+		}
+		noteStub(`native addon ${file}`);
+		if (!this.substitutes.has(filename)) this.substitutes.set(filename, createStub(file));
+		return this.substitutes.get(filename);
+	}
 	private load(filename: string, main = false): unknown {
 		if (filename.startsWith("stub:")) return this.substitutes.get(filename);
 		if (filename.startsWith("node:")) return this.builtins[filename.slice(5)];
 		if (this.cache[filename]) return this.cache[filename].exports;
-		if (!filename.startsWith("data:") && filename.endsWith(".node")) {
-			if (this.substitutes.has(filename)) return this.substitutes.get(filename);
-			const replacement =
-				this.nativeAddon?.(filename) ??
-				(/(?:^|\/)@signalapp\+sqlcipher\.node$/.test(filename)
-					? signalSQLCipherAddon(this.vfs)
-					: sqliteNativeAddon(filename, this.vfs));
-			if (replacement) {
-				this.substitutes.set(filename, replacement as object);
-				return replacement;
-			}
-			noteStub(`native addon ${filename}`);
-			if (!this.substitutes.has(filename))
-				this.substitutes.set(filename, createStub(filename));
-			return this.substitutes.get(filename);
-		}
+		if (!filename.startsWith("data:") && filename.endsWith(".node"))
+			return this.nativeModule(filename);
 		const module: ModuleRecord = {
 			id: main ? "." : filename,
 			filename,
