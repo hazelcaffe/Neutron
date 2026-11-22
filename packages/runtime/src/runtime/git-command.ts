@@ -3,6 +3,7 @@ import * as git from "isomorphic-git";
 import { GitConfigManager } from "isomorphic-git/managers";
 import path from "path-browserify";
 import type { VirtualFileSystem } from "./filesystem";
+import { applyCommand } from "./git-apply";
 import { diffCommand, diffIndexCommand } from "./git-diff";
 import { lfsCommand } from "./git-lfs";
 import { catFile, logCommand, reflog, show } from "./git-log";
@@ -28,8 +29,10 @@ import {
 	inPathspec,
 	openRepo,
 	parseConfigParameters,
+	quotePath,
 	type Repo,
 	read,
+	readBlob,
 	readIndex,
 	repoPath,
 	resolveCommit,
@@ -470,6 +473,88 @@ async function lsFiles(repo: Repo, cwd: string, args: string[]) {
 	return 0;
 }
 
+/** git ls-tree [-r] [-t] [-d] [-z] [-l] [--name-only] [--full-name|--full-tree] <tree-ish> [<path>...] */
+async function lsTree(repo: Repo, cwd: string, args: string[]) {
+	let recursive = false,
+		showTrees = false,
+		onlyTrees = false,
+		z = false,
+		nameOnly = false,
+		long = false,
+		fullName = false,
+		fullTree = false;
+	const operands: string[] = [];
+	while (args.length) {
+		const arg = args.shift() as string;
+		if (arg === "--") operands.push(...args.splice(0));
+		else if (arg === "-r") recursive = true;
+		else if (arg === "-t") showTrees = true;
+		else if (arg === "-d") onlyTrees = true;
+		else if (arg === "-z") z = true;
+		else if (arg === "--name-only" || arg === "--name-status") nameOnly = true;
+		else if (arg === "-l" || arg === "--long") long = true;
+		else if (arg === "--full-name") fullName = true;
+		else if (arg === "--full-tree") fullTree = fullName = true;
+		else if (arg.startsWith("-")) unsupported("ls-tree");
+		else operands.push(arg);
+	}
+	const [spec, ...pathArgs] = operands;
+	if (spec === undefined) return unsupported("ls-tree");
+	if (onlyTrees && recursive) showTrees = true;
+	let tree: string | undefined;
+	try {
+		tree = await resolveRevision(repo, `${spec}^{tree}`);
+	} catch {
+		tree = undefined;
+	}
+	if (!tree) return fail(`Not a valid object name ${spec}`);
+	const prefix = fullTree ? "" : path.relative(repo.dir, cwd);
+	// Literal pathspecs; a trailing slash names a directory's contents.
+	const specs = pathArgs.map((p) => {
+		const file = fullTree ? path.normalize(p).replace(/^\.\/?/, "") : repoPath(repo, cwd, p);
+		if (file === "." || file === "") return "";
+		return /(^|\/)\.{0,2}$/.test(p) ? `${file}/` : file;
+	});
+	if (!pathArgs.length && prefix) specs.push(`${prefix}/`);
+	const within = (file: string, s: string) =>
+		s === "" || file === s || file.startsWith(s.endsWith("/") ? s : `${s}/`);
+	const lines: string[] = [];
+	const format = async (entry: git.TreeEntry, file: string) => {
+		const shown = fullName ? file : path.relative(prefix, file);
+		const name = z ? shown : quotePath(shown);
+		if (nameOnly) return name;
+		let size = "";
+		if (long) {
+			const blob = entry.type === "blob" && (await readBlob(repo, entry.oid));
+			size = ` ${(blob ? String(blob.length) : "-").padStart(7)}`;
+		}
+		return `${entry.mode} ${entry.type} ${entry.oid}${size}\t${name}`;
+	};
+	const visit = async (oid: string, base: string, depth: number) => {
+		if (depth > 64) fail("tree exceeds depth limit");
+		const { tree: entries } = await git.readTree({
+			fs: repo.fs,
+			gitdir: repo.gitdir,
+			oid,
+			cache: repo.cache,
+		});
+		for (const entry of entries) {
+			repo.ctx.io.signal.throwIfAborted();
+			const file = base + entry.path;
+			const isTree = entry.type === "tree";
+			const leading = isTree && specs.some((s) => s.startsWith(`${file}/`));
+			if (specs.length && !leading && !specs.some((s) => within(file, s))) continue;
+			if (isTree && (recursive || leading)) {
+				if (showTrees) lines.push(await format(entry, file));
+				await visit(entry.oid, `${file}/`, depth + 1);
+			} else if (isTree || !onlyTrees) lines.push(await format(entry, file));
+		}
+	};
+	await visit(tree, "", 0);
+	repo.ctx.io.stdout(lines.map((l) => l + (z ? "\0" : "\n")).join(""));
+	return 0;
+}
+
 async function checkAttr(repo: Repo, cwd: string, args: string[]) {
 	let stdin = false,
 		z = false,
@@ -642,6 +727,7 @@ async function worktree(repo: Repo, args: string[]) {
 const REPO_COMMANDS = new Set([
 	"rev-parse",
 	"ls-files",
+	"ls-tree",
 	"log",
 	"rev-list",
 	"reflog",
@@ -758,6 +844,8 @@ export async function runGit(
 				return await revParse(ctx, args);
 			case "interpret-trailers":
 				return await interpretTrailers(undefined, ctx, args);
+			case "apply":
+				return await applyCommand(ctx, args);
 		}
 		if (!REPO_COMMANDS.has(command || ""))
 			return fail(`unsupported git command: ${command || "(missing)"}`);
@@ -776,6 +864,8 @@ export async function runGit(
 				return await worktree(repo, args);
 			case "ls-files":
 				return await lsFiles(repo, cwd, args);
+			case "ls-tree":
+				return await lsTree(repo, cwd, args);
 			case "log":
 				return await logCommand(repo, cwd, args);
 			case "rev-list":

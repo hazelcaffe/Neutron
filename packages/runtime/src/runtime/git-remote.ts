@@ -10,8 +10,8 @@ import {
 	configGetAll,
 	deleteLocalSection,
 	fail,
+	failRaw,
 	type GitContext,
-	GitFailure,
 	headRef,
 	isValidRefName,
 	logRef,
@@ -30,11 +30,6 @@ import { commitSnapshot } from "./git-snapshot";
 import { mergeInto, switchTrees } from "./git-worktree";
 
 const MAX_TRANSFER = 256 * 1024 * 1024;
-
-/** A failure carrying git's own multi-line stderr text verbatim. */
-const failRaw = (message: string, code = 128): never => {
-	throw new GitFailure(message, code, true);
-};
 
 class AuthenticationRequired extends Error {}
 

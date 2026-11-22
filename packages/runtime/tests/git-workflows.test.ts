@@ -303,6 +303,123 @@ describe("local repository workflows", () => {
 		});
 	});
 
+	it("stages and discards selected lines with git apply, and restages renames by blob", async () => {
+		const { git, write, vfs } = guest();
+		await identity(git);
+		await git(["init", "-b", "main", "repo"], "/work");
+		const lines = (n: number) =>
+			Array.from({ length: n }, (_, i) => `line ${i + 1}\n`).join("");
+		write("/work/repo/a.txt", lines(20));
+		await git(["add", "-A"]);
+		await git(["commit", "-m", "first"]);
+		const read = (file: string) => String(vfs.fs.readFileSync(`/work/repo/${file}`, "utf8"));
+		write(
+			"/work/repo/a.txt",
+			lines(20).replace("line 3\n", "three\n").replace("line 15\n", "fifteen\nextra\n"),
+		);
+		// Desktop's partial commit: one line of the second hunk; its new-side
+		// start is off by the unselected line, so the hunk is found by search.
+		const apply = ["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "-"];
+		expect(
+			await git(
+				apply,
+				undefined,
+				"--- a/a.txt\n+++ b/a.txt\n@@ -12,6 +12,7 @@\n line 12\n line 13\n line 14\n line 15\n+extra\n line 16\n line 17\n",
+			),
+		).toEqual({ code: 0, out: "", err: "" });
+		expect((await git(["diff", "--cached"])).out).toMatch(
+			/@@ -13,6 \+13,7 @@ line 12\n line 13\n line 14\n line 15\n\+extra\n line 16\n line 17\n line 18\n$/,
+		);
+		expect(read("a.txt")).toContain("three\n");
+		// A patch whose preimage is gone fails without touching the index.
+		const before = (await git(["ls-files", "-s"])).out;
+		expect(
+			await git(
+				apply,
+				undefined,
+				"--- a/a.txt\n+++ b/a.txt\n@@ -2,3 +2,3 @@\n line 2\n-nope\n+yes\n line 4\n",
+			),
+		).toEqual({
+			code: 1,
+			out: "",
+			err: "error: patch failed: a.txt:2\nerror: a.txt: patch does not apply\n",
+		});
+		expect((await git(["ls-files", "-s"])).out).toBe(before);
+		// Part of an untracked file.
+		write("/work/repo/new.txt", "n1\nn2\nn3\n");
+		expect(
+			await git(
+				apply,
+				undefined,
+				"--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+n1\n+n3\n",
+			),
+		).toMatchObject({ code: 0 });
+		expect((await git(["show", ":new.txt"])).out).toBe("n1\nn3\n");
+		expect(
+			await git(apply, undefined, "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+n1\n"),
+		).toMatchObject({ code: 1, err: "error: new.txt: already exists in index\n" });
+		// Discarding a selection rewrites the worktree only.
+		expect(
+			await git(
+				["apply", "--unidiff-zero", "--whitespace=nowarn", "-"],
+				undefined,
+				"--- a/a.txt\n+++ b/a.txt\n@@ -14,5 +14,4 @@\n line 14\n fifteen\n-extra\n line 16\n line 17\n",
+			),
+		).toEqual({ code: 0, out: "", err: "" });
+		expect(read("a.txt")).toBe(
+			lines(20).replace("line 3\n", "three\n").replace("line 15\n", "fifteen\n"),
+		);
+		// diff --check uses git's whitespace rules: blank and CRLF lines too.
+		await git(["reset", "-q", "--hard"]);
+		write("/work/repo/ws.txt", "x\n");
+		await git(["add", "ws.txt"]);
+		write("/work/repo/ws.txt", "x\n   \n \t\ny\r\n\t \tz\n<<<<<<< ours \n");
+		expect(await git(["diff", "--check"])).toEqual({
+			code: 2,
+			out: "ws.txt:2: trailing whitespace.\n+   \nws.txt:3: trailing whitespace.\n+ \t\nws.txt:4: trailing whitespace.\n+y\r\nws.txt:5: space before tab in indent.\n+\t \tz\nws.txt:6: leftover conflict marker\nws.txt:6: trailing whitespace.\n+<<<<<<< ours \n",
+			err: "",
+		});
+		expect(await git(["rm", "-q", "--cached", "--", "ws.txt"])).toEqual({
+			code: 0,
+			out: "",
+			err: "",
+		});
+		vfs.fs.rmSync("/work/repo/ws.txt");
+		// Default whitespace warnings, -R and --check.
+		const patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,3 @@\n line 1\n+tail \n line 2\n";
+		expect(await git(["apply", "-"], undefined, patch)).toEqual({
+			code: 0,
+			out: "",
+			err: "<stdin>:5: trailing whitespace.\ntail \nwarning: 1 line adds whitespace errors.\n",
+		});
+		expect(await git(["apply", "--check", "-"], undefined, patch)).toMatchObject({ code: 1 });
+		expect(await git(["apply", "-R", "-"], undefined, patch)).toMatchObject({ code: 0 });
+		expect(read("a.txt")).toBe(lines(20));
+		expect(await git(["apply", "-"], undefined, "not a patch\n")).toEqual({
+			code: 128,
+			out: "",
+			err: 'error: No valid patches in input (allow with "--allow-empty")\n',
+		});
+		// Desktop restages a renamed file's old blob under the new name.
+		vfs.fs.renameSync("/work/repo/a.txt", "/work/repo/moved.txt");
+		await git(["add", "--update", "--", "a.txt"]);
+		const tree = await git(["ls-tree", "HEAD", "--", "a.txt"]);
+		const [mode, type, oid] = tree.out.split("\t")[0]?.split(" ") ?? [];
+		expect([mode, type, tree.out.split("\t")[1]]).toEqual(["100644", "blob", "a.txt\n"]);
+		expect(
+			await git(["update-index", "--cacheinfo", mode as string, oid as string, "moved.txt"]),
+		).toMatchObject({
+			code: 128,
+			err: "error: moved.txt: cannot add to the index - missing --add option?\nfatal: git update-index: --cacheinfo cannot add moved.txt\n",
+		});
+		expect(
+			await git(["update-index", "--add", "--cacheinfo", `${mode},${oid},moved.txt`]),
+		).toMatchObject({ code: 0 });
+		expect((await git(["status", "--porcelain=2", "-z", "--untracked-files=all"])).out).toBe(
+			`1 D. N... 100644 000000 000000 ${oid} ${ZERO} a.txt\x001 A. N... 000000 100644 100644 ${ZERO} ${oid} moved.txt\0`,
+		);
+	});
+
 	it("records conflicted merges in the index and completes them with commit --no-edit", async () => {
 		const { git, write, vfs } = guest();
 		await identity(git);

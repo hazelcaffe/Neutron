@@ -4,11 +4,13 @@ import path from "path-browserify";
 import { compare } from "./git-diff";
 import { download, LfsFilter, type Pointer, parsePointer, smudge, treeAttributes } from "./git-lfs";
 import {
+	canonicalMode,
 	commitTree,
 	deleteLocalSection,
 	EMPTY_TREE,
 	editIndex,
 	fail,
+	failRaw,
 	findMergeBase,
 	formatIdent,
 	type GitContext,
@@ -17,6 +19,7 @@ import {
 	type IndexEntry,
 	identity,
 	inPathspec,
+	isValidPath,
 	isValidRefName,
 	logRef,
 	lstat,
@@ -263,10 +266,27 @@ export async function updateIndex(repo: Repo, cwd: string, args: string[]): Prom
 		stdin = false,
 		refresh = false;
 	const files: string[] = [];
+	const cacheinfo: { mode: string; oid: string; file: string }[] = [];
 	while (args.length) {
 		const arg = args.shift() as string;
 		if (arg === "--add") add = true;
-		else if (arg === "--remove") remove = true;
+		else if (arg === "--cacheinfo") {
+			// <mode>,<oid>,<path> or the older three-argument form.
+			const joined = /^([0-7]+),([0-9a-f]{40}),(.*)$/is.exec(args[0] ?? "");
+			if (!joined && args.length < 3)
+				failRaw("error: option 'cacheinfo' expects <mode>,<sha1>,<path>", 129);
+			const [mode = "", oid = "", file = ""] = joined ? joined.slice(1) : args.splice(0, 3);
+			if (joined) args.shift();
+			const cannot = (what: string) =>
+				failRaw(`fatal: git update-index: --cacheinfo cannot add ${what}`);
+			if (!/^[0-7]+$/.test(mode)) cannot(mode);
+			if (!/^[0-9a-f]{40}$/i.test(oid)) cannot(oid);
+			if (!isValidPath(file))
+				failRaw(
+					`error: Invalid path '${file}'\nfatal: git update-index: --cacheinfo cannot add ${file}`,
+				);
+			cacheinfo.push({ mode: canonicalMode(mode), oid: oid.toLowerCase(), file });
+		} else if (arg === "--remove") remove = true;
 		else if (arg === "--force-remove") forceRemove = true;
 		else if (arg === "--replace") {
 			/* Paths never conflict with directories in this index writer. */
@@ -291,20 +311,26 @@ export async function updateIndex(repo: Repo, cwd: string, args: string[]): Prom
 		const staged = await stageFile(repo, filter, file);
 		if (!staged) {
 			if (!remove && tracked.has(file))
-				fail(
+				failRaw(
 					`error: ${file}: does not exist and --remove not passed\nfatal: Unable to process path ${file}`,
 				);
 			if (tracked.has(file)) updates.push([file, undefined]);
 			continue;
 		}
 		if (!tracked.has(file) && !add)
-			fail(
+			failRaw(
 				`error: ${file}: cannot add to the index - missing --add option?\nfatal: Unable to process path ${file}`,
 			);
 		updates.push([file, staged]);
 	}
-	if (refresh && !files.length) return 0;
+	for (const { file } of cacheinfo)
+		if (!add && !tracked.has(file))
+			failRaw(
+				`error: ${file}: cannot add to the index - missing --add option?\nfatal: git update-index: --cacheinfo cannot add ${file}`,
+			);
+	if (refresh && !files.length && !cacheinfo.length) return 0;
 	await editIndex(repo, async (writer) => {
+		for (const { file, oid, mode } of cacheinfo) writer.insert(file, oid, mode);
 		for (const [file, staged] of updates) {
 			if (!staged) writer.remove(file);
 			else writer.insert(file, staged.oid, staged.mode, staged.stats);
@@ -376,14 +402,16 @@ export async function add(repo: Repo, cwd: string, args: string[]): Promise<numb
 /** git rm [--cached] [-r] [-f] [-q] [--] <paths> */
 export async function rm(repo: Repo, cwd: string, args: string[]): Promise<number> {
 	let cached = false,
-		ignoreUnmatch = false;
+		ignoreUnmatch = false,
+		quiet = false;
 	const specs: string[] = [];
 	while (args.length) {
 		const arg = args.shift() as string;
 		if (arg === "--") specs.push(...args.splice(0));
 		else if (arg === "--cached") cached = true;
 		else if (arg === "--ignore-unmatch") ignoreUnmatch = true;
-		else if (["-r", "-f", "--force", "-q", "--quiet"].includes(arg)) {
+		else if (arg === "-q" || arg === "--quiet") quiet = true;
+		else if (["-r", "-f", "--force"].includes(arg)) {
 			/* Recursive removal of matched index paths. */
 		} else if (arg.startsWith("-")) unsupported("rm");
 		else specs.push(arg);
@@ -405,11 +433,11 @@ export async function rm(repo: Repo, cwd: string, args: string[]): Promise<numbe
 			}
 			removeEmptyParents(repo, file);
 		}
-	for (const file of matched) out(repo, `rm '${file}'\n`);
+	if (!quiet) for (const file of matched) out(repo, `rm '${file}'\n`);
 	return 0;
 }
 
-function removeEmptyParents(repo: Repo, file: string) {
+export function removeEmptyParents(repo: Pick<Repo, "fs" | "dir">, file: string) {
 	for (let dir = path.dirname(file); dir !== "."; dir = path.dirname(dir)) {
 		const absolute = path.join(repo.dir, dir);
 		try {

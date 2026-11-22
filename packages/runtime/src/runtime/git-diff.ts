@@ -699,6 +699,17 @@ export async function diffCommand(
 	return flags.exitCode && changes.length ? 1 : 0;
 }
 
+/** The whitespace errors git's default core.whitespace rules find in an
+ * added line (without its newline): blank-at-eol and space-before-tab. */
+export function whitespaceError(text: string, crAtEol = false): string {
+	const line = crAtEol ? text.replace(/\r$/, "") : text;
+	const trailing = /[ \t\r\n]*$/.exec(line)?.index ?? line.length;
+	const errors: string[] = [];
+	if (trailing < line.length) errors.push("trailing whitespace");
+	if (/^[ \t]* \t/.test(line.slice(0, trailing))) errors.push("space before tab in indent");
+	return errors.join(", ");
+}
+
 /** Added lines that are line numbers in `right` (1-based). */
 function addedLines(left: Uint8Array, right: Uint8Array): number[] {
 	const a = splitLines(left),
@@ -734,10 +745,8 @@ async function checkWorktree(repo: Repo, paths: string[]) {
 			const line = lines[n - 1] ?? "";
 			if (/^(<{7}|={7}|>{7})( |$)/.test(line))
 				out.push(`${file}:${n}: leftover conflict marker\n`);
-			else if (/[ \t]+\r?$/.test(line) && line.trim())
-				out.push(`${file}:${n}: trailing whitespace.\n+${line}\n`);
-			else if (/^\t* +\t/.test(line))
-				out.push(`${file}:${n}: space before tab in indent.\n+${line}\n`);
+			const error = whitespaceError(line);
+			if (error) out.push(`${file}:${n}: ${error}.\n+${line}\n`);
 		}
 	}
 	repo.ctx.io.stdout(out.join(""));

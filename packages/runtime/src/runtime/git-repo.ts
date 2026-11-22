@@ -30,6 +30,10 @@ export class GitFailure extends Error {
 export const fail = (message: string, code = 128): never => {
 	throw new GitFailure(message, code);
 };
+/** A failure carrying git's own multi-line stderr text verbatim. */
+export const failRaw = (message: string, code = 128): never => {
+	throw new GitFailure(message, code, true);
+};
 export const unsupported = (command: string): never => fail(`unsupported git ${command} arguments`);
 
 export interface GitContext {
@@ -774,6 +778,32 @@ export function repoPath(repo: Repo, cwd: string, value: string): string {
 	return relative === "" ? "." : relative;
 }
 
+const C_ESCAPES: Record<number, string> = {
+	7: "\\a",
+	8: "\\b",
+	9: "\\t",
+	10: "\\n",
+	11: "\\v",
+	12: "\\f",
+	13: "\\r",
+	34: '\\"',
+	92: "\\\\",
+};
+
+/** Git's C-style path quoting (core.quotepath=true) for non -z output. */
+export function quotePath(file: string): string {
+	const data = Buffer.from(file);
+	if (!data.some((b) => b < 0x20 || b === 0x22 || b === 0x5c || b >= 0x7f)) return file;
+	let quoted = "";
+	for (const b of data)
+		quoted +=
+			C_ESCAPES[b] ??
+			(b < 0x20 || b >= 0x7f
+				? `\\${b.toString(8).padStart(3, "0")}`
+				: String.fromCharCode(b));
+	return `"${quoted}"`;
+}
+
 export const inPathspec = (file: string, specs: string[]) =>
 	!specs.length ||
 	specs.some((s) => s === "." || file === s || file.startsWith(s.endsWith("/") ? s : `${s}/`));
@@ -794,6 +824,24 @@ export function lstat(repo: { fs: VirtualFileSystem["fs"] }, file: string): Stat
 		return;
 	}
 }
+
+/** An index mode as git canonicalizes it (create_ce_mode). */
+export function canonicalMode(value: string): string {
+	const mode = Number.parseInt(value, 8);
+	const type = mode & 0o170000;
+	if (type === 0o120000) return "120000";
+	if (type === 0o160000) return "160000";
+	if (type === 0o100000 || type === 0) return mode & 0o100 ? "100755" : "100644";
+	return fail(`invalid mode ${value}`);
+}
+
+/** git's verify_path: no empty, `.`, `..` or `.git` components. */
+export const isValidPath = (file: string) =>
+	!!file &&
+	!/[\0\\]/.test(file) &&
+	file
+		.split("/")
+		.every((part) => part && part !== "." && part !== ".." && part.toLowerCase() !== ".git");
 
 export function modeOf(stat: { mode: number; isSymbolicLink(): boolean }): string {
 	if (stat.isSymbolicLink()) return "120000";
