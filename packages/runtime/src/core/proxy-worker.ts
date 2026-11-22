@@ -7,6 +7,7 @@ import {
 	type ScramjetAPI,
 	updateCookies,
 } from "../shared/proxy-context";
+import { applyHeaderFilter, BlockedByClient } from "./header-filter";
 import type { BrowserCallback } from "./loopback-fetch";
 import type { ProxySession } from "./proxy";
 import { applyCookieMode } from "./proxy-cookie-mode";
@@ -135,6 +136,10 @@ export async function proxyFetch(
 						api.BareResponse.fromNativeResponse(response),
 					);
 			});
+			if (!session.browser && session.headerFilters?.length)
+				api.Tap.tap(handler.hooks.fetch.preresponse, (input: unknown, output: unknown) =>
+					applyHeaderFilter(api, session, input, output),
+				);
 			return { handler, browser: !!session.browser };
 		})();
 		running.set(id, pending);
@@ -185,6 +190,8 @@ export async function proxyFetch(
 			{ status: result.status, statusText: result.statusText, headers },
 		);
 	} catch (error) {
+		// A webRequest listener cancelled the request: a network error, as in Electron.
+		if (error instanceof BlockedByClient) return Response.error();
 		// Transport/rewriter errors can contain the URL, including a callback query.
 		const detail = browser
 			? "External browser request failed"

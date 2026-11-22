@@ -3,6 +3,7 @@ import { browserTarget } from "../shared/browser-links";
 import { proxyContext, type ScramjetAPI, updateCookies } from "../shared/proxy-context";
 import { installScramjetFixes } from "../shared/scramjet-debugger";
 import { proxyTransport } from "./proxy-transport";
+import { installStackURLs } from "./stack-urls";
 import { installSyncXHR } from "./sync-xhr";
 
 installScramjetFixes(globalThis);
@@ -55,6 +56,7 @@ if (config && api) {
 			hookSubcontext: (child) => install(child as unknown as typeof globalThis),
 		});
 		installSyncXHR(scope, origin, context.prefix, (url) => String(client.unrewriteUrl(url)));
+		installStackURLs(scope, context.prefix.href, (url) => String(client.unrewriteUrl(url)));
 		client.hook();
 		if (navigation && !Reflect.get(scope, "navigation"))
 			Object.defineProperty(scope, "navigation", { value: navigation, configurable: true });

@@ -84,6 +84,8 @@ export interface RuntimeConfig {
 	wisp: string;
 	strict?: boolean;
 	platform?: "linux" | "win32" | "darwin";
+	/** Main-process arguments after the executable, e.g. from `app.relaunch({ args })`. */
+	argv?: string[];
 }
 export interface RuntimeSettings {
 	wisp: string;

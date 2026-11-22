@@ -13,7 +13,7 @@ import { optionalElectron } from "./optional";
 import { platformModules } from "./platform";
 import { MainMessageChannel, MainMessagePort } from "./processes";
 import type { RpcClient } from "./rpc";
-import { sessionModule } from "./sessions";
+import { type HeadersReceived, sessionModule } from "./sessions";
 import { defaultUserAgent } from "./user-agent";
 
 type Handler = (event: IpcEvent, ...args: unknown[]) => unknown;
@@ -491,6 +491,15 @@ export function createElectron(hooks: Hooks) {
 			}
 		},
 		exit,
+		// Like Electron, this only schedules a new instance for when this one
+		// exits. There is no other executable to launch: an `execPath` option
+		// starts the same app again.
+		relaunch: (options: { args?: unknown[]; execPath?: string } = {}) => {
+			hooks.send({
+				type: "relaunch",
+				args: (options.args ?? config.argv ?? []).map(String),
+			});
+		},
 		requestSingleInstanceLock: () => {
 			singleInstance = true;
 			return true;
@@ -1179,7 +1188,20 @@ export function createElectron(hooks: Hooks) {
 				console.warn("Custom protocol privileges are browser-managed."),
 		};
 	};
-	const session = sessionModule(network, vfs, createProtocol, () => app.userAgentFallback);
+	// Renderer documents and subresources load through the Scramjet proxy, not
+	// `network`. The proxy asks for these filters on a session's responses.
+	const rendererHeaders = new Map<string, HeadersReceived>();
+	const session = sessionModule(
+		network,
+		vfs,
+		createProtocol,
+		() => app.userAgentFallback,
+		(partition, patterns, dispatch) => {
+			if (patterns) rendererHeaders.set(partition, dispatch);
+			else rendererHeaders.delete(partition);
+			hooks.send({ type: "web-request", partition, headers: patterns ?? [] });
+		},
+	);
 	const protocol = session.defaultSession.protocol;
 	network.protocolHandler = protocolHandler;
 	network.localFetch = async (url) => {
@@ -1245,7 +1267,19 @@ export function createElectron(hooks: Hooks) {
 		},
 		shell: {
 			openExternal: (url: string) => rpc.call("shell.external", url),
-			openPath: (filename: string) => rpc.call("shell.download", filename).then(() => ""),
+			// Resolves with an error message rather than rejecting, like Electron.
+			// A folder opens in the Files view, Neutron's file manager.
+			openPath: async (filename: string) => {
+				try {
+					const target = vfs.normalizePath(filename);
+					if (vfs.fs.statSync(target).isDirectory())
+						hooks.send({ type: "show-files", filename: target });
+					else await rpc.call("shell.download", target);
+					return "";
+				} catch (error) {
+					return error instanceof Error ? error.message : String(error);
+				}
+			},
 			trashItem: async (filename: string) => vfs.fs.rmSync(filename, { recursive: true }),
 			showItemInFolder: (filename: string) => hooks.send({ type: "show-files", filename }),
 		},
@@ -1525,6 +1559,9 @@ export function createElectron(hooks: Hooks) {
 			// A timer/callback may assign returnValue later, including undefined.
 		},
 		protocolHandler,
+		/** `webRequest.onHeadersReceived` for a response the renderer proxy received. */
+		headersReceived: async (partition: string, details: Parameters<HeadersReceived>[0]) =>
+			(await rendererHeaders.get(partition)?.(details)) ?? {},
 		openLink: (value: string) => {
 			const url = URL.parse(value);
 			if (exiting || !url || !linkSchemes.has(url.protocol.slice(0, -1))) return false;

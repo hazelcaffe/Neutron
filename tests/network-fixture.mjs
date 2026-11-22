@@ -20,6 +20,17 @@ const server = http.createServer((request, response) => {
 			}),
 		);
 	}
+	// Mislabelled resources (like a CDN's raw files) for webRequest header filters.
+	if (request.url === "/plain-page") {
+		response.setHeader("Content-Type", "text/plain");
+		return response.end(
+			"<!doctype html><title>Filtered page</title><link rel='stylesheet' href='/plain.css'><h1 id='filtered'>Rendered as HTML</h1><script>fetch('/blocked').then(()=>'loaded',()=>'blocked').then(result=>document.body.dataset.blocked=result)</script>",
+		);
+	}
+	if (request.url === "/plain.css") {
+		response.setHeader("Content-Type", "text/plain");
+		return response.end("#filtered { color: rgb(1, 2, 3); }");
+	}
 	response.setHeader("Content-Type", "text/html");
 	response.setHeader("X-Frame-Options", "DENY");
 	if (request.url === "/nested")
