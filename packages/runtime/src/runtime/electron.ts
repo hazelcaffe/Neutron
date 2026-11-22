@@ -1267,7 +1267,19 @@ export function createElectron(hooks: Hooks) {
 		},
 		shell: {
 			openExternal: (url: string) => rpc.call("shell.external", url),
-			openPath: (filename: string) => rpc.call("shell.download", filename).then(() => ""),
+			// Resolves with an error message rather than rejecting, like Electron.
+			// A folder opens in the Files view, Neutron's file manager.
+			openPath: async (filename: string) => {
+				try {
+					const target = vfs.normalizePath(filename);
+					if (vfs.fs.statSync(target).isDirectory())
+						hooks.send({ type: "show-files", filename: target });
+					else await rpc.call("shell.download", target);
+					return "";
+				} catch (error) {
+					return error instanceof Error ? error.message : String(error);
+				}
+			},
 			trashItem: async (filename: string) => vfs.fs.rmSync(filename, { recursive: true }),
 			showItemInFolder: (filename: string) => hooks.send({ type: "show-files", filename }),
 		},
