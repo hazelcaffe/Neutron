@@ -6,6 +6,8 @@ export interface ProxySession {
 	runId?: string;
 	partition?: string;
 	schemes?: string[];
+	/** URL patterns of the partition's `webRequest.onHeadersReceived` listener. */
+	headerFilters?: string[];
 	browser?: boolean;
 	appId: string;
 	wisp: string;
@@ -55,8 +57,14 @@ export class PageProxy {
 		return entry;
 	}
 	setSchemes(partition: string, schemes: string[]): Promise<void> {
+		return this.update(partition, { schemes: [...schemes] });
+	}
+	setHeaderFilters(partition: string, patterns: string[]): Promise<void> {
+		return this.update(partition, { headerFilters: [...patterns] });
+	}
+	private update(partition: string, change: Partial<ProxySession>): Promise<void> {
 		const entry = this.partition(partition);
-		entry.session = { ...entry.session, schemes: [...schemes] };
+		entry.session = { ...entry.session, ...change };
 		const session = entry.session;
 		entry.ready = entry.ready.then(() => this.publish(session));
 		return entry.ready;

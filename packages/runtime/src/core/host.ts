@@ -539,6 +539,12 @@ export class RuntimeHost {
 			case "protocols":
 				await this.proxy.setSchemes(String(message.partition), message.schemes as string[]);
 				break;
+			case "web-request":
+				await this.proxy.setHeaderFilters(
+					String(message.partition),
+					message.headers as string[],
+				);
+				break;
 			case "result":
 				this.rpc?.receive(message as unknown as RpcResult);
 				break;

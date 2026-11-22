@@ -1,5 +1,16 @@
 import { PROTOCOL_PREFIX } from "./types";
 
+/** Electron `webRequest` filter pattern: `<all_urls>` or a URL glob with `*`. */
+export function matchesURLPattern(pattern: string, url: string): boolean {
+	if (pattern === "<all_urls>") return true;
+	return new RegExp(
+		`^${pattern
+			.split("*")
+			.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+			.join(".*")}$`,
+	).test(url);
+}
+
 /** Preserve the URL's directory structure so native relative script/CSS/module loads work. */
 export function protocolURL(instanceId: string, value: string | URL): string {
 	const url = new URL(value);

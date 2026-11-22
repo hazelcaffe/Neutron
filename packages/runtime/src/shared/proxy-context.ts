@@ -18,7 +18,7 @@ export interface FetchResponse {
 export interface FetchHandler {
 	trackedClients: Map<string, { clientId: string; history: { url: string }[] }>;
 	handleFetch(request: object): Promise<FetchResponse>;
-	hooks: { fetch: { request: object } };
+	hooks: { fetch: { request: object; preresponse: object } };
 }
 export type ScramjetAPI = typeof import("@mercuryworkshop/scramjet") & {
 	ScramjetFetchHandler: new (init: {

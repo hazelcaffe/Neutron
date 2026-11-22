@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { matchesURLPattern as matches } from "../shared/urls";
 import { dnsModule } from "./dns";
 import { noteStub } from "./fallback";
 import type { VirtualFileSystem } from "./filesystem";
@@ -24,20 +25,18 @@ interface Registration {
 	listener: Listener;
 }
 
-function matches(pattern: string, url: string): boolean {
-	if (pattern === "<all_urls>") return true;
-	return new RegExp(
-		`^${pattern
-			.split("*")
-			.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-			.join(".*")}$`,
-	).test(url);
-}
+export type HeadersReceived = (details: Details) => Promise<Record<string, unknown>>;
 export function sessionModule<P extends object>(
 	network: Network,
 	vfs: VirtualFileSystem,
 	createProtocol: (partition: string) => P,
 	fallbackUserAgent: () => string,
+	/** The partition's onHeadersReceived filter changed; renderer responses use it too. */
+	rendererHeaders?: (
+		partition: string,
+		patterns: string[] | undefined,
+		dispatch: HeadersReceived,
+	) => void,
 ) {
 	const sessions = new Map<string, Session>();
 	let nextRequest = 0;
@@ -180,14 +179,23 @@ export function sessionModule<P extends object>(
 							listener = filter;
 							filter = {};
 						}
-						if (!listener) {
-							this.requestListeners.delete(name);
-							return;
-						}
-						this.requestListeners.set(name, {
-							patterns: filter?.urls || ["<all_urls>"],
-							listener,
-						});
+						if (!listener) this.requestListeners.delete(name);
+						else
+							this.requestListeners.set(name, {
+								patterns: filter?.urls || ["<all_urls>"],
+								listener,
+							});
+						if (name === "onHeadersReceived")
+							rendererHeaders?.(
+								partition,
+								this.requestListeners.get(name)?.patterns,
+								(details) =>
+									this.dispatch(
+										"onHeadersReceived",
+										{ ...details, id: ++nextRequest },
+										true,
+									),
+							);
 					},
 				]),
 			);

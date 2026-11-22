@@ -167,9 +167,25 @@ globalThis.addEventListener("message", async (event: MessageEvent<Record<string,
 					method: string;
 					headers: [string, string][];
 					body?: ArrayBuffer;
+					/** A response's headers for `webRequest.onHeadersReceived`. */
+					received?: Parameters<typeof runtime.headersReceived>[1];
 				}>,
 			) => {
-				const { nonce, url, method, headers, body } = event.data;
+				const { nonce, url, method, headers, body, received } = event.data;
+				if (received) {
+					try {
+						protocolChannel.postMessage({
+							nonce,
+							change: await runtime.headersReceived(
+								event.data.partition || "default",
+								received,
+							),
+						});
+					} catch (error) {
+						protocolChannel.postMessage({ nonce, error: errorText(error) });
+					}
+					return;
+				}
 				try {
 					const handler = runtime.protocolHandler(
 						event.data.partition || "default",
