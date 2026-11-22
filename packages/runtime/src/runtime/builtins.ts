@@ -16,6 +16,7 @@ import { applicationEntry, applicationPath, type RuntimeConfig } from "../shared
 import { brotli, brotliConstants } from "./brotli";
 import { bufferModule } from "./buffer";
 import { asyncHooks, diagnostics, domains } from "./context";
+import { timingSafeEqual } from "./crypto";
 import { dnsModule } from "./dns";
 import { eventsModule } from "./events";
 import { createStub, noteStub, withFallback } from "./fallback";
@@ -460,6 +461,7 @@ export function makeBuiltins(
 		crypto: withFallback(
 			{
 				...crypto,
+				timingSafeEqual,
 				webcrypto: globalThis.crypto,
 				subtle: globalThis.crypto.subtle,
 				randomUUID: () => globalThis.crypto.randomUUID(),

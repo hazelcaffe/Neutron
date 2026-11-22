@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { PassThrough, Readable, Writable } from "readable-stream";
 import { describe, expect, it, vi } from "vitest";
 import { AsyncLocalStorage, AsyncResource, Domain, diagnostics } from "../src/runtime/context";
+import { timingSafeEqual } from "../src/runtime/crypto";
 import { dnsModule } from "../src/runtime/dns";
 import { eventsModule } from "../src/runtime/events";
 import { createStub, serializeFallbacks } from "../src/runtime/fallback";
@@ -11,6 +12,24 @@ import { consumers, streamPromises } from "../src/runtime/streams";
 import { timerPromises } from "../src/runtime/timers";
 
 describe("Node compatibility contracts", () => {
+	it("compares buffers like crypto.timingSafeEqual", () => {
+		const digest = new Uint8Array([1, 2, 3, 4]);
+		expect(timingSafeEqual(digest, Uint8Array.of(1, 2, 3, 4))).toBe(true);
+		expect(timingSafeEqual(digest, Uint8Array.of(1, 2, 3, 5))).toBe(false);
+		expect(timingSafeEqual(digest.buffer, new DataView(Uint8Array.of(1, 2, 3, 4).buffer))).toBe(
+			true,
+		);
+		expect(timingSafeEqual(new Uint8Array([9, 1, 2]).subarray(1), Uint8Array.of(1, 2))).toBe(
+			true,
+		);
+		expect(() => timingSafeEqual(digest, Uint8Array.of(1))).toThrow(
+			expect.objectContaining({ code: "ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH" }),
+		);
+		expect(() => timingSafeEqual("abcd", digest)).toThrow(
+			expect.objectContaining({ code: "ERR_INVALID_ARG_TYPE" }),
+		);
+	});
+
 	it("restores context after throws and binds resources to their creation scope", () => {
 		const store = new AsyncLocalStorage<string>();
 		const resource = store.run("captured", () => new AsyncResource("test"));
