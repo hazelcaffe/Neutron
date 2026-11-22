@@ -64,7 +64,7 @@ Unsupported APIs use best-effort fallbacks by default, rather than stopping star
 
 - Missing Electron members and native addon exports support no-op calls, constructors, events, callbacks, and appropriate empty/default results.
 - Missing optional dependencies produce a logged stub. The application's entry point must still exist.
-- The virtual Git CLI implements a bounded anonymous smart-HTTP clone and repository-inspection subset through isomorphic-git, OPFS and Wisp. Unsupported Git commands return nonzero status. Other unsupported native process commands may use no-op children with empty output; no executable is launched.
+- The virtual Git CLI implements, through isomorphic-git, OPFS and Wisp, the commands Git GUIs such as GitHub Desktop run: status, diff/log/show (patches, raw and numstat output), staging, commit, branches, checkout, merge (including recorded conflicts), stash, tags, fetch/pull/push over anonymous HTTP(S), remotes and config, plus Git LFS (clean/smudge and batch-API transfers). It never executes hooks or credential helpers, so pushes or private remotes that need credentials fail like Git with terminal prompts disabled. Unsupported commands and arguments return nonzero status. Other unsupported native process commands may use no-op children with empty output; no executable is launched.
 - The updater reports no update available, desktop capture returns no sources, and native UI objects retain basic configuration without creating OS UI.
 - Basic `vm` evaluation and structured-value `v8.serialize`/`deserialize` polyfills are provided.
 - Each fallback logs a `[compat]` warning once per API. It is a startup compatibility aid, not a native implementation.

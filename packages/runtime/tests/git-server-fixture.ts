@@ -42,6 +42,14 @@ export interface GitServer {
 	gitdir: (name: string) => string;
 	lfsObjects: Map<string, Buffer>;
 	hits: ServerHit[];
+	/** Commits a series of file snapshots onto `branch` of `name`. */
+	seed: (
+		name: string,
+		commits: { message: string; files: Record<string, string> }[],
+		branch?: string,
+	) => Promise<string>;
+	resolve: (name: string, ref: string) => Promise<string | undefined>;
+	message: (name: string, oid: string) => Promise<string>;
 	close: () => Promise<void>;
 }
 
@@ -262,6 +270,54 @@ export async function startGitServer(root: string, port = 0): Promise<GitServer>
 		gitdir,
 		lfsObjects,
 		hits,
+		seed: async (name, commits, branch = "main") => {
+			const dir = await ensure(name);
+			const who = {
+				name: "Fixture",
+				email: "fixture@example.org",
+				timestamp: 1700000000,
+				timezoneOffset: 0,
+			};
+			let parent: string[] = [];
+			for (const { message, files } of commits) {
+				const tree = await git.writeTree({
+					fs,
+					gitdir: dir,
+					tree: await Promise.all(
+						Object.entries(files)
+							.sort(([a], [b]) => (a < b ? -1 : 1))
+							.map(async ([path, text]) => ({
+								mode: "100644",
+								path,
+								type: "blob" as const,
+								oid: await git.writeBlob({
+									fs,
+									gitdir: dir,
+									blob: Buffer.from(text),
+								}),
+							})),
+					),
+				});
+				const oid = await git.writeCommit({
+					fs,
+					gitdir: dir,
+					commit: { tree, parent, author: who, committer: who, message: `${message}\n` },
+				});
+				parent = [oid];
+			}
+			await git.writeRef({
+				fs,
+				gitdir: dir,
+				ref: `refs/heads/${branch}`,
+				value: parent[0] as string,
+				force: true,
+			});
+			return parent[0] as string;
+		},
+		resolve: (name, ref) =>
+			git.resolveRef({ fs, gitdir: gitdir(name), ref }).catch(() => undefined),
+		message: async (name, oid) =>
+			(await git.readCommit({ fs, gitdir: gitdir(name), oid })).commit.message,
 		close: () => new Promise<void>((ok) => server.close(() => ok())),
 	};
 }
