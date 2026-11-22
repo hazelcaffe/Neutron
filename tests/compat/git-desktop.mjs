@@ -1,7 +1,8 @@
 // Drive the official GitHub Desktop (Windows package, platform win32) through
 // its main Git workflows against a local smart-HTTP + Git LFS origin:
 // onboarding (git lfs install), URL clone with an LFS file, changes list and
-// diff, commit, history, new branch + publish, push, and a remote URL change.
+// diff, commit, committing and discarding selected lines, history, new
+// branch + publish, push, and a remote URL change.
 // Runs against a private snapshot of dist with a new browser profile.
 //
 //   NEUTRON_COMPAT_CACHE=<dir containing github-desktop/manifest.json>
@@ -148,10 +149,80 @@ try {
 
 	await app.getByRole("combobox", { name: "Commit summary" }).fill("Edit from Neutron");
 	await app.getByRole("button", { name: /Commit 2 files to main/ }).click();
+	await expect(app.getByRole("heading", { name: "No local changes" })).toBeVisible();
+	// Desktop reloads history at the end of its post-commit refresh; opening
+	// History before that races its own batch loads (in Electron too).
+	await page.waitForTimeout(3000);
 	await app.getByRole("tab", { name: "History" }).click();
 	await expect(app.getByText("Edit from Neutron", { exact: true }).first()).toBeVisible();
 	await expect(app.getByText("Second fixture commit", { exact: true }).first()).toBeVisible();
 	await record("Committed; History lists the new commit above the fixture history");
+
+	// Partial commit of selected lines (git apply --cached), then discarding
+	// single lines from the diff gutter (git apply in the worktree).
+	const notes = Array.from({ length: 14 }, (_, i) => `note ${i + 1}\n`).join("");
+	const writeNotes = (text) =>
+		renderer().evaluate(
+			([dir, data]) => require("node:fs").writeFileSync(`${dir}\\notes.md`, data),
+			[dest, text],
+		);
+	const readNotes = () =>
+		renderer().evaluate(async (dir) => {
+			const cp = require("node:child_process");
+			const committed = await new Promise((done) =>
+				cp.execFile("git", ["show", "HEAD:notes.md"], { cwd: dir }, (_error, out) =>
+					done(String(out)),
+				),
+			);
+			return {
+				committed,
+				worktree: require("node:fs").readFileSync(`${dir}\\notes.md`, "utf8"),
+			};
+		}, dest);
+	await app.getByRole("tab", { name: "Changes" }).click();
+	await writeNotes(notes);
+	await refocus();
+	await app.getByRole("combobox", { name: "Commit summary" }).fill("Expand notes");
+	await app.getByRole("button", { name: /Commit 1 file to main/ }).click();
+	await expect(app.getByRole("heading", { name: "No local changes" })).toBeVisible();
+	await writeNotes(
+		notes.replace("note 2\n", "note two\n").replace("note 12\n", "note twelve\nnote 12b\n"),
+	);
+	await refocus();
+	await app.getByText("notes.md").first().click();
+	// The diff gutter's line numbers toggle (or, right-clicked, discard) a line.
+	const gutter = (text) =>
+		app
+			.locator("div.row")
+			.filter({ has: app.locator(".content-wrapper", { hasText: text }) })
+			.locator(".line-number");
+	await gutter(/^note 2$/).click();
+	await gutter(/^note 12b$/).click();
+	await app.getByRole("combobox", { name: "Commit summary" }).fill("Partial notes");
+	await app.getByRole("button", { name: /Commit 1 file to main/ }).click();
+	await expect
+		.poll(async () => (await readNotes()).committed, { timeout: 30000 })
+		.toBe(
+			notes.replace("note 2\n", "note 2\nnote two\n").replace("note 12\n", "note twelve\n"),
+		);
+	await record("Committed only the selected lines of a two-hunk change");
+
+	await gutter(/^note 12b$/).click({ button: "right" });
+	await page
+		.locator("#context-menu")
+		.getByRole("menuitem", { name: /Discard added line/ })
+		.click();
+	await app.getByRole("button", { name: "Discard changes", exact: true }).click();
+	await gutter(/^note 2$/).click({ button: "right" });
+	await page
+		.locator("#context-menu")
+		.getByRole("menuitem", { name: /Discard removed line/ })
+		.click();
+	await app.getByRole("button", { name: "Discard changes", exact: true }).click();
+	await expect(app.getByRole("heading", { name: "No local changes" })).toBeVisible();
+	const discarded = await readNotes();
+	expect(discarded.worktree).toBe(discarded.committed);
+	await record("Discarded single added and removed lines from the diff gutter");
 
 	await app
 		.getByRole("button", { name: /Push origin/ })
@@ -161,7 +232,7 @@ try {
 		timeout: 30000,
 	});
 	const mainTip = await origin.resolve("demo", "refs/heads/main");
-	expect(await origin.message("demo", mainTip)).toBe("Edit from Neutron\n");
+	expect(await origin.message("demo", mainTip)).toBe("Partial notes\n");
 	await record("Pushed main to the fixture with receive-pack");
 
 	await app.getByRole("button", { name: /Current branch/ }).click();
