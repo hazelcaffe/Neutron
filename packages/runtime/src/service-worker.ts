@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { browserLoopback } from "./core/loopback-fetch";
-import { configureProxy, proxyCookies, proxyFetch } from "./core/proxy-worker";
+import { configureProxy, proxyCookies, proxyFetch, setVirtualResponses } from "./core/proxy-worker";
 import { AppStorage } from "./core/storage";
 import {
 	barrierPrefix,
@@ -11,6 +11,7 @@ import {
 	runtimePath,
 	syncPrefix,
 } from "./shared/base";
+import { PROXY_COOKIES } from "./shared/proxy-context";
 import { installScramjetFixes } from "./shared/scramjet-debugger";
 import { parse, type SyncRequest, type SyncResult, stringify } from "./shared/sync";
 import { type FilePatch, HOST_WORKER_PROTOCOL } from "./shared/types";
@@ -131,7 +132,15 @@ self.addEventListener("message", (event) => {
 				.finally(() => port.close()),
 		);
 	}
-	if (type === "proxy-cookies") event.waitUntil(proxyCookies(event.data.id, event.data.cookies));
+	if (type === PROXY_COOKIES)
+		event.waitUntil(
+			proxyCookies(
+				event.data.id,
+				event.data.cookies,
+				event.source instanceof Client ? event.source : null,
+				event.ports[0],
+			),
+		);
 });
 
 /** Raw virtual resources. All browser content rewriting is performed by Scramjet v2. */
@@ -284,6 +293,42 @@ function barrier(token: string): Promise<Response> {
 		channel.postMessage("waiting");
 	});
 }
+setVirtualResponses(async (session, target, request, callback) => {
+	if (session.browser) {
+		if (callback)
+			return browserLoopback(
+				session,
+				callback.owner ? await self.clients.get(callback.owner) : undefined,
+				target,
+				request.method,
+				callback,
+			);
+		if (/^https?:$/.test(target.protocol)) return undefined;
+		// A committed navigation to a desktop scheme is handled by the
+		// owning tab's host. Asset/XHR requests never trigger app events.
+		// External pages cannot fetch OPFS or an Electron protocol handler.
+		return new Response("This address can only be opened by its registered application.", {
+			status: 403,
+			headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+		});
+	}
+	if (session.schemes?.includes(target.protocol.slice(0, -1)))
+		return protocolResponse(
+			session.runId ?? session.id,
+			target.href,
+			request,
+			session.partition,
+		);
+	if (/^https?:$/.test(target.protocol)) return undefined;
+	if (target.protocol === "file:")
+		return appFile(
+			new Request(
+				`${self.location.origin}${filePrefix()}${session.appId}${target.pathname}${target.search}`,
+				{ method: request.method, headers: request.headers },
+			),
+		);
+	return protocolResponse(session.runId ?? session.id, target.href, request, session.partition);
+});
 self.addEventListener("fetch", (event) => {
 	const url = new URL(event.request.url);
 	if (url.origin !== self.location.origin) return;
@@ -297,52 +342,7 @@ self.addEventListener("fetch", (event) => {
 		return;
 	}
 	if (url.pathname.startsWith(runtimePath("__scramjet__/"))) {
-		event.respondWith(
-			proxyFetch(event, async (session, target, request, callback) => {
-				if (session.browser) {
-					if (callback)
-						return browserLoopback(
-							session,
-							callback.owner ? await self.clients.get(callback.owner) : undefined,
-							target,
-							request.method,
-							callback,
-						);
-					if (/^https?:$/.test(target.protocol)) return undefined;
-					// A committed navigation to a desktop scheme is handled by the
-					// owning tab's host. Asset/XHR requests never trigger app events.
-					// External pages cannot fetch OPFS or an Electron protocol handler.
-					return new Response(
-						"This address can only be opened by its registered application.",
-						{
-							status: 403,
-							headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
-						},
-					);
-				}
-				if (session.schemes?.includes(target.protocol.slice(0, -1)))
-					return protocolResponse(
-						session.runId ?? session.id,
-						target.href,
-						request,
-						session.partition,
-					);
-				if (/^https?:$/.test(target.protocol)) return undefined;
-				if (target.protocol === "file:")
-					return appFile(
-						new Request(
-							`${self.location.origin}${filePrefix()}${session.appId}${target.pathname}${target.search}`,
-							{ method: request.method, headers: request.headers },
-						),
-					);
-				return protocolResponse(
-					session.runId ?? session.id,
-					target.href,
-					request,
-					session.partition,
-				);
-			}),
-		);
+		event.respondWith(proxyFetch(event));
 		return;
 	}
 	if (url.pathname.startsWith(filePrefix())) {

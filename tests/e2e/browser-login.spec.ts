@@ -1,4 +1,4 @@
-import { expect, type Frame, type JSHandle, type Locator } from "@playwright/test";
+import { expect, type Frame, type JSHandle, type Locator, type Page } from "@playwright/test";
 import { test } from "./package-profile";
 
 const cases = [
@@ -60,6 +60,103 @@ function signInControl(frame: Frame) {
 		.or(frame.getByRole("button", { name: /(?:continue|sign in|log in) with (?:google|sso)/i }))
 		.filter({ visible: true })
 		.first();
+}
+
+// Run code as a page <script>, so Scramjet rewrites it like the vendor's own code.
+function pageScript(frame: Frame, code: string): Promise<void> {
+	return frame.evaluate((source) => {
+		const script = document.createElement("script");
+		script.textContent = source;
+		document.body.append(script);
+	}, code);
+}
+const proxiedPath = (path: string) =>
+	new RegExp(`/__scramjet__/[^/]+/https%3A%2F%2Fwww\\.figma\\.com${encodeURIComponent(path)}`);
+
+// Every step after Figma's sign-in form appears, without an account. Each one
+// must reach Figma's own response through Scramjet, not a proxy failure.
+async function figmaSignInSteps(page: Page, frame: Frame): Promise<void> {
+	const tabs = page.locator("iframe[data-neutron-browser]");
+	// Password form: Figma's credentials error proves the POST, cookies and CSRF.
+	await frame
+		.locator('input[type="email"]')
+		.filter({ visible: true })
+		.first()
+		.fill("neutron-probe-nobody@example.invalid");
+	await frame
+		.locator('input[type="password"]')
+		.filter({ visible: true })
+		.first()
+		.fill("not-a-real-password");
+	const login = page.waitForResponse(
+		(r) => r.request().method() === "POST" && proxiedPath("/api/session/login").test(r.url()),
+	);
+	await frame.getByRole("button", { name: /^log in$/i }).click();
+	expect((await login).status()).toBe(401);
+	await expect(frame.getByText(/email and password combination is incorrect/i)).toBeVisible();
+
+	// "Use single sign-on" is <a href="#">: a same-document switch, not a reload.
+	await frame.evaluate(() => Reflect.set(window, "__neutronProbe", true));
+	await frame.getByRole("link", { name: /use single sign-on/i }).click();
+	// The committed document URL gains the fragment (a reload would not).
+	await expect.poll(() => frame.evaluate(() => location.href.endsWith("#"))).toBe(true);
+	await expect(frame.getByText(/log in to figma with saml sso/i)).toBeVisible();
+	expect(await frame.evaluate(() => Reflect.get(window, "__neutronProbe"))).toBe(true);
+	await frame.getByRole("link", { name: /log in with google or a password/i }).click();
+
+	// Google SSO opens a popup and polls for it to close or set a cookie.
+	// Before popups were windows, Figma reported "window-not-found" at once.
+	const before = await tabs.count();
+	await frame.getByRole("button", { name: /continue with google/i }).click();
+	await expect(tabs).toHaveCount(before + 1);
+	let popup: Frame | undefined;
+	await expect
+		.poll(() => {
+			popup = page
+				.frames()
+				.find((f) => /accounts\.google\.com/.test(decodeURIComponent(f.url())));
+			return !!popup;
+		})
+		.toBe(true);
+	await page.waitForTimeout(2_000);
+	await expect(frame.getByText(/unable to get profile information/i)).toBeHidden();
+
+	// Synthetic final callback: Figma's finish page writes its result cookie
+	// and closes the popup. A token error (not "window"/"cookie not found")
+	// shows the opener read the popup's cookie.
+	const steps: string[] = [];
+	const onRequest = (request: { postData(): string | null }) => {
+		for (const match of (request.postData() ?? "").matchAll(
+			/GoogleSSOError[^}]*?"step":"([a-z-]+)"/g,
+		))
+			if (match[1]) steps.push(match[1]);
+	};
+	page.on("request", onRequest);
+	if (!popup) throw new Error("Google popup missing");
+	await pageScript(
+		popup,
+		'location.href="https://www.figma.com/finish_google_sso?state=neutron-synthetic&code=neutron-synthetic"',
+	);
+	await expect(tabs).toHaveCount(before);
+	await expect(frame.getByText(/unable to get profile information/i)).toBeVisible();
+	await expect.poll(() => steps, { timeout: 30_000 }).toContain("token-not-found");
+	page.off("request", onRequest);
+
+	// The grant page's redeem link with a synthetic secret: the desktop app must
+	// pass it to its own sign-in view, which posts it to Figma.
+	const redeem = page.waitForResponse(
+		(r) =>
+			r.request().method() === "POST" &&
+			proxiedPath("/api/session/app_auth/redeem").test(r.url()),
+	);
+	await pageScript(
+		frame,
+		'window.opener=null;location.replace("figma://app_auth/redeem?g_secret=neutron-synthetic")',
+	);
+	const redeemed = await redeem;
+	expect(redeemed.status()).toBe(400);
+	expect(redeemed.frame().name()).toMatch(/^neutron:\d+$/);
+	await expect(tabs).toHaveCount(0);
 }
 
 for (const target of cases)
@@ -137,6 +234,8 @@ for (const target of cases)
 			});
 			let proxiedLoginWindow = false;
 			let vendorUI = false;
+			let loginFrame: Frame | undefined;
+			let signInSteps = false;
 			try {
 				await button.click({ timeout: 10_000 });
 				await expect
@@ -147,7 +246,10 @@ for (const target of cases)
 								if (!(await inNewVisibleWindow(frame, originalWindows))) continue;
 								proxiedLoginWindow = true;
 								vendorUI = await signInControl(frame).isVisible();
-								if (vendorUI) break;
+								if (vendorUI) {
+									loginFrame = frame;
+									break;
+								}
 							}
 							return extraPages > 0 || vendorUI;
 						},
@@ -163,12 +265,22 @@ for (const target of cases)
 					false,
 				);
 				expect(proxiedLoginWindow && vendorUI).toBe(true);
+				if (target.name === "Figma" && loginFrame) {
+					await figmaSignInSteps(page, loginFrame);
+					signInSteps = true;
+					expect(extraPages, "A sign-in step escaped into a separate Chromium page").toBe(
+						0,
+					);
+					expect(directGrantNavigation, "A sign-in step left the proxy").toBe(false);
+					await expect(page.locator("#runtime-state")).toHaveText("Application running");
+				}
 			} finally {
 				console.log(`${target.name} login probe:`, {
 					extraPages,
 					directGrantNavigation,
 					proxiedLoginWindow,
 					vendorUI,
+					signInSteps,
 				});
 				await originalWindows.dispose();
 			}

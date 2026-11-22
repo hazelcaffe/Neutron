@@ -117,6 +117,17 @@ export interface RuntimeBridge {
 	send(windowId: number, message: unknown): void;
 	subscribe(windowId: number, listener: (message: Record<string, unknown>) => void): () => void;
 	proxyURL(url: string): string;
+	/** Window operations for documents inside a web-only Neutron Browser tab. */
+	browser: BrowserTabs;
+}
+export interface BrowserTabs {
+	/** Opens a URL ("" for about:blank) in a new or named tab from a document in
+	 * a tab. Returns the new tab's window unless `opener` is false. */
+	open(source: Window, url: string, name: string, opener: boolean): Window | null;
+	/** The window that opened this tab's top-level document, if any. */
+	opener(tab: Window): Window | null;
+	disown(tab: Window): void;
+	close(tab: Window): void;
 }
 export const APP_ROOT = "/app";
 // Bump when the shell and service worker can no longer use the same RPC contract.

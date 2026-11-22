@@ -2,7 +2,10 @@ import { proxyTransport } from "../runtime/proxy-transport";
 import { runtimePath, scramjetPrefix } from "../shared/base";
 import { isLoopbackHTTP } from "../shared/loopback";
 import {
+	acknowledged,
 	type FetchHandler,
+	PROXY_COOKIES,
+	type ProxyCookies,
 	proxyContext,
 	type ScramjetAPI,
 	updateCookies,
@@ -13,9 +16,26 @@ import type { ProxySession } from "./proxy";
 import { applyCookieMode } from "./proxy-cookie-mode";
 
 declare const self: ServiceWorkerGlobalScope;
+type VirtualResponse = (
+	session: ProxySession,
+	url: URL,
+	request: Request,
+	callback?: BrowserCallback,
+) => Promise<Response | undefined>;
+interface LoadedSession {
+	session: ProxySession;
+	handler: FetchHandler;
+	jar: ReturnType<typeof proxyContext>["cookieJar"];
+	persist(): Promise<void>;
+}
 const configurations = "neutron-scramjet-v2";
-const running = new Map<string, Promise<{ handler: FetchHandler; browser: boolean }>>();
-const jars = new Map<string, ReturnType<typeof proxyContext>["cookieJar"]>();
+const running = new Map<string, Promise<LoadedSession>>();
+let virtual: VirtualResponse = async () => undefined;
+/** Neutron's own responses (files, app protocols, loopback callbacks) take
+ * precedence over the network for every proxy session. */
+export function setVirtualResponses(respond: VirtualResponse): void {
+	virtual = respond;
+}
 const configURL = (id: string) =>
 	new URL(runtimePath(`__neutron_proxy_config__/${id}`), self.location.origin).href;
 const cookieURL = (session: ProxySession) =>
@@ -37,31 +57,52 @@ export async function configureProxy(session: ProxySession, owner: string): Prom
 	);
 	running.delete(session.id);
 }
+/**
+ * Every document of a proxy session reads cookies from its own copy of the
+ * session's jar (Scramjet's document.cookie). Give live documents the cookies
+ * another document or a network response set, as a browser's shared cookie
+ * store would. `wait` lists the clients whose acknowledgement must arrive
+ * first; "all" waits for every recipient.
+ */
+async function shareCookies(
+	session: ProxySession,
+	cookies: ProxyCookies["cookies"],
+	{ wait, skip }: { wait: string[] | "all"; skip?: string },
+): Promise<void> {
+	const prefix = new URL(scramjetPrefix(session.id), self.location.origin).href;
+	const message: ProxyCookies = { type: PROXY_COOKIES, id: session.id, cookies };
+	const deliveries: Promise<void>[] = [];
+	for (const client of await self.clients.matchAll({ type: "window" })) {
+		if (client.id === skip || !client.url.startsWith(prefix)) continue;
+		const delivered = acknowledged((port) => client.postMessage(message, [port]));
+		if (wait === "all" || wait.includes(client.id)) deliveries.push(delivered);
+	}
+	await Promise.all(deliveries);
+}
+/** document.cookie in one of the session's documents. */
 export async function proxyCookies(
 	id: string,
-	cookies: { url: string; cookie: string }[],
+	cookies: ProxyCookies["cookies"],
+	source: Client | null,
+	reply?: MessagePort,
 ): Promise<void> {
-	const jar = jars.get(id);
-	if (!jar) return;
-	updateCookies(jar, cookies);
-	const cache = await caches.open(configurations);
-	const session = (await (await cache.match(configURL(id)))?.json()) as ProxySession | undefined;
-	if (session) await cache.put(cookieURL(session), new Response(jar.dump()));
+	try {
+		const prefix = new URL(scramjetPrefix(id), self.location.origin).href;
+		if (!source?.url.startsWith(prefix) || !Array.isArray(cookies)) return;
+		// After a worker restart the session may not have handled a request yet.
+		const loaded = await loadSession(id);
+		updateCookies(loaded.jar, cookies);
+		await loaded.persist();
+		await shareCookies(loaded.session, cookies, { wait: "all", skip: source.id });
+	} catch {
+		/* An expired session has no jar left to update. */
+	} finally {
+		reply?.postMessage(true);
+		reply?.close();
+	}
 }
-export async function proxyFetch(
-	event: FetchEvent,
-	virtual: (
-		session: ProxySession,
-		url: URL,
-		request: Request,
-		callback?: BrowserCallback,
-	) => Promise<Response | undefined>,
-): Promise<Response> {
+function loadSession(id: string): Promise<LoadedSession> {
 	const api = Reflect.get(globalThis, "$scramjet") as ScramjetAPI;
-	const id = new URL(event.request.url).pathname
-		.slice(runtimePath("__scramjet__/").length)
-		.split("/")[0];
-	if (!id) return new Response("Missing app proxy session", { status: 400 });
 	let pending = running.get(id);
 	if (!pending) {
 		pending = (async () => {
@@ -72,14 +113,13 @@ export async function proxyFetch(
 			const owner = stored.headers.get("X-Neutron-Owner");
 			const cookieData = await (await cache.match(cookieURL(session)))?.text();
 			const context = proxyContext(api, session, self.location.origin, cookieData);
-			jars.set(id, context.cookieJar);
+			const persist = () =>
+				cache.put(cookieURL(session), new Response(context.cookieJar.dump()));
 			const handler = new api.ScramjetFetchHandler({
 				context,
 				transport: proxyTransport(session.wisp),
 				crossOriginIsolated: true,
-				sendSetCookie: async () => {
-					await cache.put(cookieURL(session), new Response(context.cookieJar.dump()));
-				},
+				sendSetCookie: persist,
 				fetchDataUrl: async (url) => api.BareResponse.fromNativeResponse(await fetch(url)),
 				fetchBlobUrl: async (url) => {
 					const blob = (
@@ -140,15 +180,41 @@ export async function proxyFetch(
 				api.Tap.tap(handler.hooks.fetch.preresponse, (input: unknown, output: unknown) =>
 					applyHeaderFilter(api, session, input, output),
 				);
-			return { handler, browser: !!session.browser };
+			// After applyCookieMode has removed cookies this request may not set.
+			// The requesting document must hold them before its fetch resolves.
+			api.Tap.tap(
+				handler.hooks.fetch.preresponse,
+				async (input: unknown, output: unknown) => {
+					const { parsed, request } = input as {
+						parsed: { url: URL };
+						request: { requester: string };
+					};
+					const cookies = (
+						output as { response: { rawHeaders: [string, string][] } }
+					).response.rawHeaders
+						.filter(([key]) => key.toLowerCase() === "set-cookie")
+						.map(([, cookie]) => ({ url: parsed.url.href, cookie }));
+					if (cookies.length)
+						await shareCookies(session, cookies, { wait: [request.requester] });
+				},
+			);
+			return { session, handler, jar: context.cookieJar, persist };
 		})();
 		running.set(id, pending);
 	}
+	return pending;
+}
+export async function proxyFetch(event: FetchEvent): Promise<Response> {
+	const api = Reflect.get(globalThis, "$scramjet") as ScramjetAPI;
+	const id = new URL(event.request.url).pathname
+		.slice(runtimePath("__scramjet__/").length)
+		.split("/")[0];
+	if (!id) return new Response("Missing app proxy session", { status: 400 });
 	let browser = false;
 	try {
-		const loaded = await pending;
+		const loaded = await loadSession(id);
 		const handler = loaded.handler;
-		browser = loaded.browser;
+		browser = !!loaded.session.browser;
 		const clientId = event.resultingClientId || event.clientId || "untracked";
 		if (!handler.trackedClients.has(clientId))
 			handler.trackedClients.set(clientId, { clientId, history: [] });
@@ -164,6 +230,7 @@ export async function proxyFetch(
 					? request.referrer
 					: false,
 			loopbackSignal: request.signal,
+			requester: event.clientId,
 			rawUrl: new URL(request.url),
 			rawReferrer: request.referrer || null,
 			rawDestination: request.destination,
