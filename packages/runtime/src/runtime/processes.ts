@@ -7,6 +7,7 @@ import type { VirtualFileSystem } from "./filesystem";
 import { gitVersion, isGit, runGit } from "./git-command";
 import type { Network } from "./network";
 
+const MAX_STDIN = 64 * 1024 * 1024;
 const uncloneable = new WeakSet<object>();
 const untransferable = new WeakSet<object>();
 const PlatformMessagePort = globalThis.MessagePort;
@@ -342,6 +343,7 @@ export function processModules(
 				if (options.signal?.aborted) this.kill();
 				this.emit("spawn");
 				let code = 127;
+				let input: Promise<Uint8Array> | undefined;
 				try {
 					if (isGit(command) && !options.shell)
 						code = await runGit(vfs, args, options, {
@@ -353,6 +355,25 @@ export function processModules(
 								queueMicrotask(() => this.stdout.push(Buffer.from(text))),
 							stderr: (text) =>
 								queueMicrotask(() => this.stderr.push(Buffer.from(text))),
+							stdin: () => {
+								input ??= new Promise<Uint8Array>((resolve, reject) => {
+									const chunks: Buffer[] = [];
+									let size = 0;
+									this.stdin.on("data", (chunk) => {
+										size += chunk.length;
+										if (size > MAX_STDIN)
+											reject(new Error("standard input exceeds limit"));
+										else chunks.push(Buffer.from(chunk));
+									});
+									this.stdin.once("end", () =>
+										resolve(new Uint8Array(Buffer.concat(chunks))),
+									);
+									this.controller.signal.addEventListener("abort", () =>
+										reject(this.controller.signal.reason),
+									);
+								});
+								return input;
+							},
 						});
 					else
 						this.stderr.push(
