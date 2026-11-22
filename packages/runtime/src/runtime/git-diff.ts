@@ -9,6 +9,7 @@ import {
 	inPathspec,
 	MAX_BLOB,
 	type Repo,
+	readBlob,
 	readIndex,
 	repoPath,
 	resolveCommit,
@@ -485,6 +486,7 @@ export interface ParsedDiffArgs extends FormatFlags {
 	copies: boolean;
 	exitCode: boolean;
 	quiet: boolean;
+	check: boolean;
 }
 
 export function parseDiffArgs(
@@ -507,6 +509,7 @@ export function parseDiffArgs(
 		renames: defaultRenames,
 		copies: false,
 		exitCode: false,
+		check: false,
 		quiet: false,
 	};
 	let explicitFormat = false;
@@ -542,6 +545,7 @@ export function parseDiffArgs(
 		else if (arg === "-C" || arg === "--find-copies") flags.copies = flags.renames = true;
 		else if (arg === "--no-renames") flags.renames = flags.copies = false;
 		else if (arg === "--exit-code") flags.exitCode = true;
+		else if (arg === "--check") flags.check = explicitFormat = true;
 		else if (arg === "--quiet") flags.quiet = flags.exitCode = true;
 		else if (/^-U\d+$/.test(arg) || /^--unified=\d+$/.test(arg))
 			flags.context = Number(arg.replace(/^\D+/, ""));
@@ -636,6 +640,13 @@ export async function diffCommand(
 	const flags = parseDiffArgs(args, true, true);
 	if (flags.noIndex) return noIndexDiff(repo, cwd, flags, ctx.io, ctx.vfs);
 	if (!repo) return fail("not a git repository");
+	if (flags.check) {
+		if (flags.revisions.length || flags.cached) unsupported("diff --check");
+		return checkWorktree(
+			repo,
+			flags.paths.map((p) => repoPath(repo, cwd, p)),
+		);
+	}
 	const paths = flags.paths.map((p) => repoPath(repo, cwd, p));
 	let revisions = flags.revisions;
 	if (revisions.length === 1 && /^[^.]+\.\.\.?[^.]+$/.test(revisions[0] || "")) {
@@ -686,6 +697,51 @@ export async function diffCommand(
 	});
 	if (!flags.quiet) ctx.io.stdout(await formatChanges(changes, { ...flags, clean }));
 	return flags.exitCode && changes.length ? 1 : 0;
+}
+
+/** Added lines that are line numbers in `right` (1-based). */
+function addedLines(left: Uint8Array, right: Uint8Array): number[] {
+	const a = splitLines(left),
+		b = splitLines(right);
+	const ops = editScript(markEol(a), markEol(b));
+	const added: number[] = [];
+	let y = 0;
+	for (const op of ops) {
+		if (op === 2) added.push(y + 1);
+		if (op !== 1) y++;
+	}
+	return added;
+}
+
+/** git diff --check: whitespace errors and leftover conflict markers in the
+ * worktree's changes (against "ours" for unmerged paths), exit 2 if any. */
+async function checkWorktree(repo: Repo, paths: string[]) {
+	const index = await readIndex(repo);
+	const worktree = await worktreeSnapshot(repo, index);
+	const base = new Map<string, string>();
+	for (const entry of index)
+		if (entry.stage === 0 || entry.stage === 2) base.set(entry.path, entry.oid);
+	const out: string[] = [];
+	for (const [file, oid] of [...base].sort()) {
+		if (!inPathspec(file, paths)) continue;
+		const w = worktree.snapshot.get(file);
+		if (!w || w.mode === "160000" || (await w.oid()) === oid) continue;
+		const left = await readBlob(repo, oid);
+		const right = await w.data();
+		if (isBinary(left) || isBinary(right)) continue;
+		const lines = splitLines(right).text;
+		for (const n of addedLines(left, right)) {
+			const line = lines[n - 1] ?? "";
+			if (/^(<{7}|={7}|>{7})( |$)/.test(line))
+				out.push(`${file}:${n}: leftover conflict marker\n`);
+			else if (/[ \t]+\r?$/.test(line) && line.trim())
+				out.push(`${file}:${n}: trailing whitespace.\n+${line}\n`);
+			else if (/^\t* +\t/.test(line))
+				out.push(`${file}:${n}: space before tab in indent.\n+${line}\n`);
+		}
+	}
+	repo.ctx.io.stdout(out.join(""));
+	return out.length ? 2 : 0;
 }
 
 /** git diff-index --cached --name-status [--no-renames] -z <tree> -- */

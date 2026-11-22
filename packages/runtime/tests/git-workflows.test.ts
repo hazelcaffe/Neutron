@@ -303,6 +303,72 @@ describe("local repository workflows", () => {
 		});
 	});
 
+	it("records conflicted merges in the index and completes them with commit --no-edit", async () => {
+		const { git, write, vfs } = guest();
+		await identity(git);
+		await git(["init", "-b", "main", "repo"], "/work");
+		write("/work/repo/f.txt", "base\n");
+		write("/work/repo/other.txt", "same\n");
+		await git(["add", "-A"]);
+		await git(["commit", "-m", "base"]);
+		await git(["checkout", "-b", "side"]);
+		write("/work/repo/f.txt", "side\n");
+		await git(["commit", "-am", "side"]);
+		await git(["checkout", "main"]);
+		write("/work/repo/f.txt", "main\n");
+		await git(["commit", "-am", "main"]);
+		const [ours, theirs] = [
+			(await git(["rev-parse", "main"])).out.trim(),
+			(await git(["rev-parse", "side"])).out.trim(),
+		];
+		// Conflicted trees cannot be produced, so merge-tree refuses honestly.
+		expect(
+			await git([
+				"merge-tree",
+				"--write-tree",
+				"--name-only",
+				"--no-messages",
+				"-z",
+				ours,
+				theirs,
+			]),
+		).toMatchObject({ code: 128 });
+		const merge = await git(["merge", "--", "side"]);
+		expect(merge).toMatchObject({
+			code: 1,
+			out: "Auto-merging f.txt\nCONFLICT (content): Merge conflict in f.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+		});
+		expect(vfs.fs.readFileSync("/work/repo/f.txt", "utf8")).toBe(
+			"<<<<<<< HEAD\nmain\n=======\nside\n>>>>>>> side\n",
+		);
+		expect(vfs.fs.readFileSync("/work/repo/.git/MERGE_HEAD", "utf8")).toBe(`${theirs}\n`);
+		expect((await git(["status", "--porcelain=2", "-z"])).out).toMatch(
+			/^u UU N\.\.\. 100644 100644 100644 100644 [0-9a-f]{40} [0-9a-f]{40} [0-9a-f]{40} f\.txt\0$/,
+		);
+		expect(await git(["commit", "--no-edit", "--cleanup=strip"])).toMatchObject({
+			code: 128,
+			err: expect.stringContaining("unmerged files"),
+		});
+		write("/work/repo/f.txt", "resolved\n");
+		await git(["add", "--", "f.txt"]);
+		expect(await git(["commit", "--no-edit", "--cleanup=strip"])).toMatchObject({ code: 0 });
+		expect((await git(["log", "-1", "--format=%P%x00%B"])).out).toBe(
+			`${ours} ${theirs}\0Merge branch 'side'\n\n`,
+		);
+		expect(vfs.fs.existsSync("/work/repo/.git/MERGE_HEAD")).toBe(false);
+		// merge --abort restores the pre-merge state.
+		await git(["checkout", "-b", "again"]);
+		write("/work/repo/f.txt", "again\n");
+		await git(["commit", "-am", "again"]);
+		await git(["checkout", "main"]);
+		write("/work/repo/f.txt", "main 2\n");
+		await git(["commit", "-am", "main 2"]);
+		expect((await git(["merge", "again"])).code).toBe(1);
+		expect(await git(["merge", "--abort"])).toMatchObject({ code: 0 });
+		expect(vfs.fs.readFileSync("/work/repo/f.txt", "utf8")).toBe("main 2\n");
+		expect((await git(["status", "--porcelain=2", "-z"])).out).toBe("");
+	});
+
 	it("refuses unsupported commands and arguments with a nonzero status", async () => {
 		const { git } = guest();
 		await git(["init", "repo"], "/work");

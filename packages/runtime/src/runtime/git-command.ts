@@ -52,6 +52,7 @@ import {
 	init,
 	mergeBaseCommand,
 	mergeCommand,
+	mergeTreeCommand,
 	reset,
 	rm,
 	status,
@@ -664,6 +665,7 @@ const REPO_COMMANDS = new Set([
 	"tag",
 	"merge",
 	"merge-base",
+	"merge-tree",
 	"fetch",
 	"pull",
 	"push",
@@ -816,6 +818,8 @@ export async function runGit(
 				return await mergeCommand(repo, args);
 			case "merge-base":
 				return await mergeBaseCommand(repo, args);
+			case "merge-tree":
+				return await mergeTreeCommand(repo, args);
 			case "fetch":
 				return await fetchCommand(repo, args);
 			case "pull":

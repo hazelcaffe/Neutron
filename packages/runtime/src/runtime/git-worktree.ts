@@ -2,7 +2,7 @@ import { Buffer } from "buffer";
 import * as git from "isomorphic-git";
 import path from "path-browserify";
 import { compare } from "./git-diff";
-import { download, LfsFilter, type Pointer, parsePointer, treeAttributes } from "./git-lfs";
+import { download, LfsFilter, type Pointer, parsePointer, smudge, treeAttributes } from "./git-lfs";
 import {
 	commitTree,
 	deleteLocalSection,
@@ -799,6 +799,13 @@ export async function checkout(repo: Repo, cwd: string, args: string[]): Promise
 	if (positional.length > (create ? 1 : 1)) unsupported("checkout");
 	const head = await tryResolve(repo, "HEAD");
 	const from = await currentName(repo);
+	if (create && !head && !positional[0]) {
+		// On an unborn branch, -b only renames the branch-to-be.
+		if (!isValidRefName(`refs/heads/${create}`)) fail(`'${create}' is not a valid branch name`);
+		repo.fs.writeFileSync(path.join(repo.gitdir, "HEAD"), `ref: refs/heads/${create}\n`);
+		repo.ctx.io.stderr(`Switched to a new branch '${create}'\n`);
+		return 0;
+	}
 	if (create) {
 		const start = positional[0] ?? "HEAD";
 		const target = await resolveCommit(repo, start);
@@ -970,7 +977,9 @@ export async function commit(repo: Repo, cwd: string, args: string[]): Promise<n
 		original = (await readCommit(repo, head as string)).commit;
 	}
 	if (message === undefined && noEdit)
-		message = amend ? original?.message : (read(repo, "MERGE_MSG") ?? read(repo, "SQUASH_MSG"));
+		message =
+			(amend ? original?.message : (read(repo, "MERGE_MSG") ?? read(repo, "SQUASH_MSG"))) ??
+			"";
 	if (message === undefined)
 		fail("no commit message given (interactive editing is not supported)");
 	message = cleanupMessage(message as string, cleanup ?? (noEdit ? "strip" : "whitespace"));
@@ -1258,7 +1267,7 @@ export async function mergeInto(
 ): Promise<number> {
 	const head = await tryResolve(repo, "HEAD");
 	const theirs = await resolveCommit(repo, theirsSpec);
-	if (!theirs) fail(`${theirsSpec} - not something we can merge`);
+	if (!theirs) throw new GitFailure(`merge: ${theirsSpec} - not something we can merge`, 1, true);
 	const branch = await headRef(repo);
 	const reflog = options.reflog ?? `merge ${theirsSpec}`;
 	if (!head) {
@@ -1332,17 +1341,9 @@ export async function mergeInto(
 			cache: repo.cache,
 		});
 	} catch (error) {
-		if ((error as { code?: string }).code === "MergeConflictError") {
-			const files = (
-				(error as { data?: { filepaths?: string[] } }).data?.filepaths || []
-			).map((f) => `CONFLICT (content): Merge conflict in ${f}\n`);
-			out(repo, files.join(""));
-			fail(
-				"Automatic merge failed; this CLI cannot record conflicted merges. Merge was not started.",
-				1,
-			);
-		}
-		throw error;
+		if ((error as { code?: string }).code !== "MergeConflictError" || options.squash)
+			throw error;
+		return recordConflicts(repo, theirs as string, theirsSpec, message);
 	}
 	if (options.squash) {
 		const { tree } = result;
@@ -1364,6 +1365,51 @@ export async function mergeInto(
 	await updateRef(repo, branch ?? "HEAD", merged, `${reflog}: Merge made by the 'ort' strategy.`);
 	out(repo, "Merge made by the 'ort' strategy.\n");
 	return 0;
+}
+
+/** Redo a conflicted merge so isomorphic-git records conflict stages in the
+ * index and writes marker files, then leave the merge in progress like git. */
+async function recordConflicts(repo: Repo, theirs: string, label: string, message: string) {
+	let conflicts: string[] = [];
+	try {
+		// Refs (not ids) so the conflict markers read "HEAD" and the branch.
+		await git.merge({
+			fs: repo.fs,
+			gitdir: repo.gitdir,
+			dir: repo.dir,
+			ours: "HEAD",
+			theirs: (await tryResolve(repo, label)) === theirs ? label : theirs,
+			fastForward: false,
+			noUpdateBranch: true,
+			abortOnConflict: false,
+			message: `${message}\n`,
+			author: await identity(repo, repo.ctx, "author"),
+			committer: await identity(repo, repo.ctx, "committer"),
+			cache: repo.cache,
+		});
+	} catch (error) {
+		if ((error as { code?: string }).code !== "MergeConflictError") throw error;
+		conflicts = (error as { data?: { filepaths?: string[] } }).data?.filepaths ?? [];
+	}
+	repo.fs.writeFileSync(path.join(repo.gitdir, "MERGE_HEAD"), `${theirs}\n`);
+	repo.fs.writeFileSync(path.join(repo.gitdir, "MERGE_MODE"), "");
+	repo.fs.writeFileSync(
+		path.join(repo.gitdir, "MERGE_MSG"),
+		`${message}\n\n# Conflicts:\n${conflicts.map((f) => `#\t${f}\n`).join("")}`,
+	);
+	// The merge rewrote the worktree from tree objects; restore LFS content.
+	const index = await readIndex(repo);
+	await smudge(
+		repo,
+		new Map(
+			index.filter((e) => e.stage === 0).map((e) => [e.path, { oid: e.oid, mode: e.mode }]),
+		),
+	);
+	out(
+		repo,
+		`${conflicts.map((f) => `Auto-merging ${f}\nCONFLICT (content): Merge conflict in ${f}\n`).join("")}Automatic merge failed; fix conflicts and then commit the result.\n`,
+	);
+	return 1;
 }
 
 async function writeTemporaryCommit(repo: Repo, tree: string, parent: string) {
@@ -1408,6 +1454,57 @@ export async function mergeCommand(repo: Repo, args: string[]): Promise<number> 
 	}
 	if (operands.length !== 1) unsupported("merge");
 	return mergeInto(repo, operands[0] as string, { squash, ffOnly, noFf, message });
+}
+
+/** git merge-tree --write-tree [--name-only] [--no-messages] [-z] <a> <b> */
+export async function mergeTreeCommand(repo: Repo, args: string[]): Promise<number> {
+	const operands = args.filter((a) => !a.startsWith("-"));
+	const flags = args.filter((a) => a.startsWith("-"));
+	if (
+		!flags.includes("--write-tree") ||
+		flags.some(
+			(f) =>
+				!["--write-tree", "--name-only", "--no-messages", "--messages", "-z"].includes(f),
+		) ||
+		operands.length !== 2
+	)
+		unsupported("merge-tree");
+	const [ours, theirs] = await Promise.all(operands.map((o) => resolveCommit(repo, o)));
+	if (!ours || !theirs) fail(`${!ours ? operands[0] : operands[1]} - not something we can merge`);
+	const base = await findMergeBase(repo, ours as string, theirs as string);
+	if (!base) fail("refusing to merge unrelated histories");
+	const end = flags.includes("-z") ? "\0" : "\n";
+	const treeOf = async (oid: string) => (await readCommit(repo, oid)).commit.tree;
+	let tree: string;
+	if (base === theirs) tree = await treeOf(ours as string);
+	else if (base === ours) tree = await treeOf(theirs as string);
+	else
+		try {
+			const who = await identity(repo, repo.ctx, "committer");
+			const result = await git.merge({
+				fs: repo.fs,
+				gitdir: repo.gitdir,
+				ours: ours as string,
+				theirs: theirs as string,
+				fastForward: false,
+				dryRun: true,
+				noUpdateBranch: true,
+				abortOnConflict: true,
+				author: who,
+				committer: who,
+				message: "merge-tree\n",
+				cache: repo.cache,
+			});
+			tree = result.tree as string;
+		} catch (error) {
+			// isomorphic-git does not produce the conflicted tree (with marker
+			// blobs) that git would print, so refuse instead of inventing one.
+			if ((error as { code?: string }).code === "MergeConflictError")
+				fail("merge-tree: cannot write the tree of a conflicted merge");
+			throw error;
+		}
+	out(repo, tree + end);
+	return 0;
 }
 
 export async function mergeBaseCommand(repo: Repo, args: string[]): Promise<number> {
