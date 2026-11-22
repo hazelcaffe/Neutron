@@ -1,0 +1,354 @@
+/// <reference lib="webworker" />
+import { browserLoopback } from "./core/loopback-fetch";
+import { configureProxy, proxyCookies, proxyFetch } from "./core/proxy-worker";
+import { AppStorage } from "./core/storage";
+import { installScramjetFixes } from "./shared/scramjet-debugger";
+import { parse, type SyncRequest, type SyncResult, stringify } from "./shared/sync";
+import { FILE_PREFIX, type FilePatch, HOST_WORKER_PROTOCOL, PROTOCOL_PREFIX } from "./shared/types";
+import { parseProtocolURL } from "./shared/urls";
+
+declare const self: ServiceWorkerGlobalScope;
+// Scramjet v2 snapshots the Blob URL APIs in every realm. Service workers do
+// not expose them, so keep worker-created rewriter blobs in this worker.
+const workerBlobs = new Map<string, Blob>();
+Reflect.set(globalThis, "__neutronSWBlobs", workerBlobs);
+if (!URL.createObjectURL) {
+	URL.createObjectURL = (blob: Blob) => {
+		const url = `blob:${self.location.origin}/${crypto.randomUUID()}`;
+		workerBlobs.set(url, blob);
+		return url;
+	};
+	URL.revokeObjectURL = (url) => {
+		workerBlobs.delete(url);
+	};
+}
+installScramjetFixes(globalThis);
+importScripts("/vendor/scramjet/scramjet_bundled.js");
+const MIME: Record<string, string> = {
+	html: "text/html",
+	htm: "text/html",
+	js: "text/javascript",
+	mjs: "text/javascript",
+	cjs: "text/javascript",
+	css: "text/css",
+	json: "application/json",
+	svg: "image/svg+xml",
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	gif: "image/gif",
+	webp: "image/webp",
+	ico: "image/x-icon",
+	wasm: "application/wasm",
+	woff: "font/woff",
+	woff2: "font/woff2",
+	ttf: "font/ttf",
+	mp3: "audio/mpeg",
+	mp4: "video/mp4",
+	webm: "video/webm",
+	txt: "text/plain",
+	map: "application/json",
+};
+self.addEventListener("install", (event) => event.waitUntil(self.skipWaiting()));
+self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+
+// Disk writes and browser file reads meet in this worker, never on a blocked
+// renderer thread. A read waits only for already-announced writes to its app.
+const fileWrites = new Map<string, Promise<void>>();
+let storageReady: Promise<AppStorage> | undefined;
+function persistFiles(id: string, patches: FilePatch[]): Promise<void> {
+	const previous = fileWrites.get(id) ?? Promise.resolve();
+	const next = previous
+		.catch(() => {})
+		.then(async () => {
+			if (!storageReady) {
+				const storage = new AppStorage();
+				storageReady = storage
+					.init()
+					.then(() => storage)
+					.catch((error) => {
+						storageReady = undefined;
+						throw error;
+					});
+			}
+			await (await storageReady).persist(id, patches);
+		});
+	fileWrites.set(id, next);
+	return next.finally(() => {
+		if (fileWrites.get(id) === next) fileWrites.delete(id);
+	});
+}
+self.addEventListener("message", (event) => {
+	const type = event.data?.type;
+	if (type === "runtime-handshake" || type === "persist-files" || type === "proxy-configure") {
+		const port = event.ports[0];
+		// These host RPCs are sent by the shell, not by an application frame.
+		if (
+			!port ||
+			!event.source ||
+			!("frameType" in event.source) ||
+			event.source.frameType !== "top-level"
+		) {
+			port?.postMessage({ error: "Invalid runtime host request" });
+			port?.close();
+			return;
+		}
+		if (type === "runtime-handshake") {
+			port.postMessage({ ok: true, protocol: HOST_WORKER_PROTOCOL });
+			port.close();
+			return;
+		}
+		const { id, patches } = event.data;
+		if (
+			type === "persist-files" &&
+			(typeof id !== "string" || !/^[\da-f-]{36}$/i.test(id) || !Array.isArray(patches))
+		) {
+			port.postMessage({ error: "Invalid storage request" });
+			port.close();
+			return;
+		}
+		const work =
+			type === "persist-files"
+				? persistFiles(id, patches)
+				: configureProxy(event.data.session, event.source.id);
+		event.waitUntil(
+			work
+				.then(
+					() => port.postMessage({ ok: true }),
+					(error) => port.postMessage({ error: String(error) }),
+				)
+				.finally(() => port.close()),
+		);
+	}
+	if (type === "proxy-cookies") event.waitUntil(proxyCookies(event.data.id, event.data.cookies));
+});
+
+/** Raw virtual resources. All browser content rewriting is performed by Scramjet v2. */
+async function appFile(request: Request): Promise<Response> {
+	try {
+		const url = new URL(request.url);
+		const parts = url.pathname.slice(FILE_PREFIX.length).split("/").map(decodeURIComponent);
+		const id = parts.shift();
+		if (!id || parts.some((part) => part === ".." || part === "." || /[\\/\0]/.test(part)))
+			return new Response("Invalid virtual path", { status: 400 });
+		const pending = fileWrites.get(id);
+		if (pending) {
+			try {
+				await pending;
+			} catch (error) {
+				return new Response(`Virtual file write failed: ${String(error)}`, { status: 500 });
+			}
+		}
+		let root = await navigator.storage.getDirectory();
+		for (const name of ["neutron", "apps", id]) root = await root.getDirectoryHandle(name);
+		let links: Record<string, string> = {};
+		try {
+			links = JSON.parse(
+				await (await (await root.getFileHandle("links.json")).getFile()).text(),
+			);
+		} catch {
+			/* No symlinks. */
+		}
+		let virtual = `/${parts.join("/")}`;
+		for (let depth = 0; depth < 40; depth++) {
+			const prefix = Object.keys(links).find(
+				(link) => virtual === link || virtual.startsWith(`${link}/`),
+			);
+			if (!prefix) break;
+			virtual = new URL(
+				`${links[prefix]}${virtual.slice(prefix.length)}`,
+				`https://virtual.invalid${prefix}`,
+			).pathname;
+			if (depth === 39) throw new Error("Symlink loop");
+		}
+		const resolved = virtual.split("/").filter(Boolean);
+		const name = resolved.pop();
+		if (!name) return new Response("Not a file", { status: 404 });
+		root = await root.getDirectoryHandle("fs");
+		for (const part of resolved) root = await root.getDirectoryHandle(part);
+		const file = await (await root.getFileHandle(name)).getFile();
+		const type = MIME[name.split(".").pop()?.toLowerCase() || ""] || "application/octet-stream";
+		const headers = {
+			"Cross-Origin-Embedder-Policy": "credentialless",
+			"Cross-Origin-Opener-Policy": "same-origin",
+			"Content-Type": type,
+			"Cache-Control": "no-store",
+			"Accept-Ranges": "bytes",
+		};
+		const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get("range") || "");
+		if (range) {
+			const start = range[1] ? Number(range[1]) : Math.max(0, file.size - Number(range[2]));
+			const end =
+				range[1] && range[2] ? Math.min(Number(range[2]), file.size - 1) : file.size - 1;
+			if (start > end || start >= file.size)
+				return new Response(null, {
+					status: 416,
+					headers: { "Content-Range": `bytes */${file.size}` },
+				});
+			return new Response(request.method === "HEAD" ? null : file.slice(start, end + 1), {
+				status: 206,
+				headers: {
+					...headers,
+					"Content-Range": `bytes ${start}-${end}/${file.size}`,
+					"Content-Length": String(end - start + 1),
+				},
+			});
+		}
+		return new Response(request.method === "HEAD" ? null : file, { headers });
+	} catch (error) {
+		return new Response(`Virtual file unavailable: ${String(error)}`, { status: 404 });
+	}
+}
+async function protocolResponse(
+	id: string,
+	url: string,
+	request: Request,
+	partition = "default",
+): Promise<Response> {
+	const nonce = crypto.randomUUID();
+	const body = ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer();
+	return new Promise((resolve, reject) => {
+		const channel = new BroadcastChannel(`neutron-protocol:${id}`);
+		const timer = setTimeout(() => {
+			channel.close();
+			reject(new Error("Protocol handler timed out"));
+		}, 15_000);
+		channel.onmessage = (
+			event: MessageEvent<{
+				nonce: string;
+				error?: string;
+				body: Uint8Array;
+				status: number;
+				headers: [string, string][];
+			}>,
+		) => {
+			if (event.data.nonce !== nonce) return;
+			clearTimeout(timer);
+			channel.close();
+			if (event.data.error) reject(new Error(event.data.error));
+			else
+				resolve(
+					new Response(
+						request.method === "HEAD" || [204, 205, 304].includes(event.data.status)
+							? null
+							: new Uint8Array(event.data.body),
+						{ status: event.data.status, headers: event.data.headers },
+					),
+				);
+		};
+		channel.postMessage({
+			partition,
+			nonce,
+			url,
+			method: request.method,
+			headers: [...request.headers],
+			body,
+		});
+	});
+}
+self.addEventListener("fetch", (event) => {
+	const url = new URL(event.request.url);
+	if (url.origin !== self.location.origin) return;
+	if (url.pathname.startsWith("/__scramjet__/")) {
+		event.respondWith(
+			proxyFetch(event, async (session, target, request, callback) => {
+				if (session.browser) {
+					if (callback)
+						return browserLoopback(
+							session,
+							callback.owner ? await self.clients.get(callback.owner) : undefined,
+							target,
+							request.method,
+							callback,
+						);
+					if (/^https?:$/.test(target.protocol)) return undefined;
+					// A committed navigation to a desktop scheme is handled by the
+					// owning tab's host. Asset/XHR requests never trigger app events.
+					// External pages cannot fetch OPFS or an Electron protocol handler.
+					return new Response(
+						"This address can only be opened by its registered application.",
+						{
+							status: 403,
+							headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+						},
+					);
+				}
+				if (session.schemes?.includes(target.protocol.slice(0, -1)))
+					return protocolResponse(
+						session.runId ?? session.id,
+						target.href,
+						request,
+						session.partition,
+					);
+				if (/^https?:$/.test(target.protocol)) return undefined;
+				if (target.protocol === "file:")
+					return appFile(
+						new Request(
+							`${self.location.origin}${FILE_PREFIX}${session.appId}${target.pathname}${target.search}`,
+							{ method: request.method, headers: request.headers },
+						),
+					);
+				return protocolResponse(
+					session.runId ?? session.id,
+					target.href,
+					request,
+					session.partition,
+				);
+			}),
+		);
+		return;
+	}
+	if (url.pathname.startsWith(FILE_PREFIX)) {
+		event.respondWith(appFile(event.request));
+		return;
+	}
+	if (url.pathname.startsWith(PROTOCOL_PREFIX)) {
+		const parsed = parseProtocolURL(url);
+		event.respondWith(
+			protocolResponse(parsed.instanceId, parsed.url, event.request).catch(
+				(error) => new Response(String(error), { status: 502 }),
+			),
+		);
+		return;
+	}
+	if (url.pathname.startsWith("/__neutron_sync__/"))
+		event.respondWith(
+			(async () => {
+				const [, , instanceId, target] = url.pathname.split("/");
+				if (!instanceId || !["main", "host"].includes(target || ""))
+					return new Response(stringify({ error: "Invalid synchronous bridge target" }), {
+						status: 400,
+					});
+				const request = parse(await event.request.text()) as SyncRequest;
+				return new Promise<Response>((resolve) => {
+					const channel = new BroadcastChannel(`neutron-${target}:${instanceId}`);
+					const finish = (result: SyncResult) => {
+						clearTimeout(timer);
+						channel.close();
+						resolve(
+							new Response(stringify(result), {
+								headers: {
+									"Content-Type": "application/json",
+									"Cache-Control": "no-store",
+								},
+							}),
+						);
+					};
+					const timer = setTimeout(
+						() =>
+							finish({
+								nonce: request.nonce,
+								error: "Synchronous bridge timed out (handler may depend on the blocked renderer)",
+							}),
+						15_000,
+					);
+					channel.onmessage = (event: MessageEvent<SyncResult>) => {
+						if (event.data.nonce === request.nonce) finish(event.data);
+					};
+					channel.postMessage(request);
+				});
+			})().catch(
+				(error) => new Response(stringify({ error: String(error) }), { status: 500 }),
+			),
+		);
+});

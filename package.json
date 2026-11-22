@@ -1,0 +1,54 @@
+{
+	"name": "neutron",
+	"version": "0.1.0",
+	"description": "Run unmodified Electron apps in the browser.",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/hazelcaffe/Neutron.git"
+	},
+	"homepage": "https://github.com/hazelcaffe/Neutron#readme",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@12.16.1",
+	"engines": {
+		"node": ">=24"
+	},
+	"scripts": {
+		"dev": "vite --host 0.0.0.0",
+		"build": "tsc --noEmit && vite build",
+		"preview": "vite preview --host 0.0.0.0",
+		"check": "biome check . && tsc --noEmit",
+		"format": "biome check --write .",
+		"prepare:assets": "pnpm --filter @neutron/runtime assets",
+		"test": "vitest run",
+		"test:e2e": "playwright test",
+		"compat:fetch": "node scripts/compat/fetch.mjs",
+		"compat:sweep": "node scripts/compat/run.mjs"
+	},
+	"dependencies": {
+		"@fontsource-variable/inter": "5.3.0",
+		"@mantine/core": "9.8.2",
+		"@mantine/hooks": "9.8.2",
+		"@mantine/notifications": "9.8.2",
+		"@neutron/runtime": "workspace:*",
+		"react": "19.3.1",
+		"react-dom": "19.3.1"
+	},
+	"devDependencies": {
+		"7zip-bin": "^5.2.0",
+		"@biomejs/biome": "^2.6.8",
+		"@electron/asar": "^4.3.2",
+		"@mercuryworkshop/wisp-js": "0.5.3",
+		"@playwright/test": "^1.65.1",
+		"@types/node": "^26.6.6",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"@vitejs/plugin-react": "6.3.0",
+		"fflate": "^0.8.3",
+		"typescript": "^7.0.2",
+		"vite": "^8.3.8",
+		"vitest": "^5.1.0",
+		"ws": "^8.23.0"
+	}
+}

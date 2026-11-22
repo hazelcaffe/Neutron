@@ -1,0 +1,316 @@
+html,
+body,
+#root {
+	height: 100%;
+}
+body {
+	margin: 0;
+	overflow: hidden;
+}
+code {
+	font-family: var(--mantine-font-family-monospace);
+	font-size: 0.92em;
+}
+.grow {
+	flex: 1;
+}
+.pre {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.shell {
+	display: flex;
+	flex-direction: column;
+	height: 100dvh;
+}
+.bar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 8px;
+	min-height: 48px;
+	padding: 6px 10px 6px 14px;
+	border-bottom: 1px solid var(--mantine-color-default-border);
+}
+.brand {
+	margin-right: 4px;
+	letter-spacing: -0.02em;
+}
+.app-select {
+	width: 200px;
+}
+
+.tabs,
+.menu-row {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--mantine-color-default-border);
+}
+#window-tablist {
+	display: flex;
+	gap: 4px;
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+.window-tab {
+	display: flex;
+	flex: none;
+	align-items: center;
+	max-width: 260px;
+	border: 1px solid transparent;
+	border-radius: var(--mantine-radius-sm);
+	color: var(--mantine-color-dimmed);
+}
+.window-tab:hover {
+	background: var(--mantine-color-default-hover);
+}
+.window-tab[data-state="active"] {
+	border-color: var(--mantine-color-default-border);
+	background: var(--mantine-color-default);
+	color: var(--mantine-color-text);
+}
+.window-tab[data-state="failed"] {
+	color: var(--mantine-color-red-text);
+}
+.window-tab-select {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	height: 28px;
+	padding: 0 4px 0 10px;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	font-size: var(--mantine-font-size-sm);
+	cursor: pointer;
+}
+.window-tab-select:focus-visible {
+	outline: 2px solid var(--mantine-primary-color-filled);
+	outline-offset: -2px;
+	border-radius: var(--mantine-radius-sm);
+}
+.window-tab-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.window-tab[data-state="hidden"] .window-tab-title,
+.window-tab-badge {
+	font-style: italic;
+}
+.window-tab-badge {
+	font-size: var(--mantine-font-size-xs);
+}
+.window-tab-close {
+	flex: none;
+	margin-right: 2px;
+}
+
+.stage {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+}
+#desktop {
+	position: absolute;
+	inset: 0;
+}
+.overlay {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	padding: 24px;
+	overflow: auto;
+	background: var(--mantine-color-body);
+}
+.where {
+	line-height: 1.8;
+}
+
+.logs {
+	display: flex;
+	flex: none;
+	flex-direction: column;
+	height: 35%;
+	min-height: 160px;
+	border-top: 1px solid var(--mantine-color-default-border);
+}
+.logs-head {
+	padding: 4px 6px 4px 14px;
+	border-bottom: 1px solid var(--mantine-color-default-border);
+}
+#console-output {
+	flex: 1;
+	padding: 4px 0;
+	overflow: auto;
+	font: 12px / 1.55 var(--mantine-font-family-monospace);
+}
+.log {
+	display: grid;
+	grid-template-columns: 64px 110px minmax(0, 1fr);
+	gap: 12px;
+	padding: 1px 14px;
+}
+.log time,
+.log .source {
+	color: var(--mantine-color-dimmed);
+	white-space: nowrap;
+}
+.log .source {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.log pre {
+	margin: 0;
+	font: inherit;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.log.warn {
+	color: var(--mantine-color-yellow-text);
+}
+.log.error {
+	color: var(--mantine-color-red-text);
+}
+.log.debug pre {
+	color: var(--mantine-color-dimmed);
+}
+.check {
+	display: inline-block;
+	width: 1em;
+}
+
+#drop-overlay {
+	position: fixed;
+	inset: 12px;
+	z-index: 1000;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	border: 2px dashed var(--mantine-primary-color-filled);
+	border-radius: var(--mantine-radius-lg);
+	background: color-mix(in srgb, var(--mantine-color-body) 88%, transparent);
+	pointer-events: none;
+}
+
+/* Native dialogs the runtime opens for the app (message boxes, folder picker). */
+.neutron-dialog {
+	padding: 20px;
+	border: 1px solid var(--mantine-color-default-border);
+	border-radius: var(--mantine-radius-md);
+	background: var(--mantine-color-body);
+	color: var(--mantine-color-text);
+	box-shadow: var(--mantine-shadow-xl);
+	font-family: var(--mantine-font-family);
+	font-size: var(--mantine-font-size-sm);
+}
+.neutron-dialog::backdrop {
+	background: rgb(0 0 0 / 0.45);
+}
+.neutron-dialog h2 {
+	margin: 0 0 8px;
+	font-size: var(--mantine-font-size-lg);
+}
+.neutron-dialog p {
+	margin: 0 0 8px;
+	white-space: pre-wrap;
+}
+.neutron-dialog-detail {
+	color: var(--mantine-color-dimmed);
+}
+.neutron-dialog label {
+	display: block;
+	margin: 12px 0 4px;
+	font-weight: 500;
+}
+.neutron-dialog input {
+	height: 32px;
+	padding: 0 10px;
+	border: 1px solid var(--mantine-color-default-border);
+	border-radius: var(--mantine-radius-sm);
+	background: var(--mantine-color-default);
+	color: inherit;
+	font: inherit;
+}
+.neutron-dialog button {
+	height: 32px;
+	padding: 0 14px;
+	border: 1px solid var(--mantine-color-default-border);
+	border-radius: var(--mantine-radius-sm);
+	background: var(--mantine-color-default);
+	color: var(--mantine-color-text);
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+.neutron-dialog button:hover {
+	background: var(--mantine-color-default-hover);
+}
+.neutron-dialog button[data-primary] {
+	border-color: transparent;
+	background: var(--mantine-primary-color-filled);
+	color: #fff;
+}
+
+@media (max-width: 640px) {
+	.bar {
+		gap: 6px;
+		padding: 6px 8px;
+	}
+	.app-select {
+		flex: 1 1 120px;
+		width: auto;
+	}
+	.brand {
+		display: none;
+	}
+	/* Keep the status dot; the label stays available to assistive technology. */
+	#runtime-state .mantine-Badge-label {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+	}
+	.log {
+		grid-template-columns: 58px minmax(0, 1fr);
+		gap: 0 8px;
+	}
+	.log pre {
+		grid-column: 1 / -1;
+	}
+}
+
+.file-list {
+	display: flex;
+	flex-direction: column;
+	font: 12px / 1.4 var(--mantine-font-family-monospace);
+}
+.file-entry {
+	display: flex;
+	gap: 12px;
+	justify-content: space-between;
+	padding: 4px 8px;
+	border-radius: var(--mantine-radius-sm);
+}
+.file-entry:hover {
+	background: var(--mantine-color-default-hover);
+}
+.file-path {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+.file-size {
+	flex: none;
+	color: var(--mantine-color-dimmed);
+}

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    check:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 26
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm check
+            - run: pnpm test
+            - run: pnpm build
+
+    browser:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 26
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm exec playwright install --with-deps chromium
+            - run: pnpm build
+            # Tests that need official app packages skip themselves without them.
+            - run: pnpm test:e2e --workers=2
+            - if: failure()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: playwright-results
+                  path: test-results/
+                  retention-days: 7

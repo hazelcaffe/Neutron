@@ -1,0 +1,64 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.8/schema.json",
+	"files": {
+		"includes": [
+			"**",
+			"!!.cache",
+			"!!packages/runtime/assets",
+			"!!dist",
+			"!!test-results",
+			"!!pnpm-lock.yaml"
+		]
+	},
+	"formatter": {
+		"indentStyle": "tab",
+		"indentWidth": 4,
+		"lineWidth": 100
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "double",
+			"semicolons": "always"
+		}
+	},
+	"css": {
+		"parser": {
+			"cssModules": false
+		}
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended"
+		}
+	},
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	},
+	"overrides": [
+		{
+			"includes": ["src/**"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": {
+							"level": "error",
+							"options": {
+								"patterns": [
+									{
+										"group": ["**/packages/**", "@neutron/runtime/**"],
+										"message": "The UI uses only the public @neutron/runtime API."
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		}
+	]
+}
