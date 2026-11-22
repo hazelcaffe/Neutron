@@ -1,0 +1,12 @@
+{
+	"name": "@neutron/libsignal-wasm",
+	"version": "0.106.2-neutron.1",
+	"private": true,
+	"description": "Signal's libsignal Node bridge built for WebAssembly (wasm32-wasip1-threads + emnapi)",
+	"license": "AGPL-3.0-only",
+	"type": "module",
+	"scripts": {
+		"fetch": "node fetch.mjs",
+		"rebuild": "./build.sh"
+	}
+}

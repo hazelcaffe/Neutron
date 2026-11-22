@@ -10,6 +10,9 @@ export interface ProxySession {
 	/** URL patterns of the partition's `webRequest.onHeadersReceived` listener. */
 	headerFilters?: string[];
 	browser?: boolean;
+	/** App documents wait for the renderer to prepare WebAssembly addon builds
+	 * before their own scripts run (see runtime/renderer.ts). */
+	addonBarrier?: boolean;
 	appId: string;
 	wisp: string;
 }
@@ -75,9 +78,19 @@ export class PageProxy {
 		await entry.ready;
 		return entry.session;
 	}
-	async configure(wisp: string, instanceId?: string, app?: InstalledApp): Promise<void> {
+	async configure(
+		wisp: string,
+		instanceId?: string,
+		app?: InstalledApp,
+		addonBarrier = false,
+	): Promise<void> {
 		if (!instanceId || !app) return;
-		this.session = { id: instanceId, appId: app.id, wisp };
+		this.session = {
+			id: instanceId,
+			appId: app.id,
+			wisp,
+			...(addonBarrier && { addonBarrier }),
+		};
 		await this.ready("default");
 		if (crossOriginIsolated) {
 			const worker = new Worker(runtimePath("runtime/xhr-worker.js"), {

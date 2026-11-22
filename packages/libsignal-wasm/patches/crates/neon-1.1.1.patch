@@ -1,0 +1,347 @@
+diff -ruN a/src/context/internal.rs b/src/context/internal.rs
+--- a/src/context/internal.rs	2026-11-22 07:33:43.894345457 -0500
++++ b/src/context/internal.rs	2026-11-22 07:33:43.922575870 -0500
+@@ -72,6 +72,36 @@
+     }
+ }
+ 
++// emnapi initializes WebAssembly addons through this export.
++#[cfg(target_family = "wasm")]
++#[no_mangle]
++unsafe extern "C" fn napi_register_wasm_v1(env: *mut c_void, m: *mut c_void) -> *mut c_void {
++    napi_register_module_v1(env, m)
++}
++
++// A reactor module runs its static constructors once, here, rather than
++// around every exported call. Distributed slices register from them.
++#[cfg(target_family = "wasm")]
++#[no_mangle]
++extern "C" fn _initialize() {
++    use std::sync::atomic::{AtomicBool, Ordering};
++    unsafe extern "C" {
++        fn __wasm_call_ctors();
++        fn __wasi_init_tp();
++    }
++    // Memory is shared: constructors must run once, not once per thread instance.
++    static INITIALIZED: AtomicBool = AtomicBool::new(false);
++    if INITIALIZED.swap(true, Ordering::AcqRel) {
++        return;
++    }
++    unsafe {
++        // What wasi-libc's crt1-reactor `_initialize` does: set up the main
++        // thread's libc state (pthread self, thread list), then constructors.
++        __wasi_init_tp();
++        __wasm_call_ctors()
++    }
++}
++
+ #[no_mangle]
+ unsafe extern "C" fn napi_register_module_v1(env: *mut c_void, m: *mut c_void) -> *mut c_void {
+     let env = env.cast();
+@@ -82,6 +112,9 @@
+         *v.borrow_mut() = true;
+     });
+ 
++    #[cfg(target_family = "wasm")]
++    let _sync = sys::wasm_memory::Flush::new(env);
++
+     let env = Env(env);
+     let exports = Handle::new_internal(JsObject::from_local(env, m.cast()));
+     let _ = ModuleContext::with(env, exports, init);
+diff -ruN a/src/sys/arraybuffer.rs b/src/sys/arraybuffer.rs
+--- a/src/sys/arraybuffer.rs	2026-11-22 07:33:43.902788153 -0500
++++ b/src/sys/arraybuffer.rs	2026-11-22 07:33:43.930453998 -0500
+@@ -61,6 +61,9 @@
+         return &mut [];
+     }
+ 
++    #[cfg(target_family = "wasm")]
++    super::wasm_memory::mark_dirty(buf);
++
+     slice::from_raw_parts_mut(data.assume_init().cast(), size)
+ }
+ 
+diff -ruN a/src/sys/async_work.rs b/src/sys/async_work.rs
+--- a/src/sys/async_work.rs	2026-11-22 07:33:43.903142804 -0500
++++ b/src/sys/async_work.rs	2026-11-22 07:33:43.930737206 -0500
+@@ -152,6 +152,9 @@
+ 
+     debug_assert_eq!(napi::delete_async_work(env, work), Ok(()));
+ 
++    #[cfg(target_family = "wasm")]
++    let _sync = super::wasm_memory::Flush::new(env);
++
+     BOUNDARY.catch_failure(env, None, move |env| {
+         // `unwrap` is okay because `call_complete` should be called exactly once
+         // if and only if `call_execute` has completed successfully
+diff -ruN a/src/sys/bindings/functions.rs b/src/sys/bindings/functions.rs
+--- a/src/sys/bindings/functions.rs	2026-11-22 07:33:43.903426494 -0500
++++ b/src/sys/bindings/functions.rs	2026-11-22 07:33:43.931013331 -0500
+@@ -419,7 +419,22 @@
+ 
+ use super::{Env, Status};
+ 
++#[cfg(target_family = "wasm")]
++pub(crate) unsafe fn load(_env: Env) -> Result<(), core::convert::Infallible> {
++    napi1::load();
++    #[cfg(feature = "napi-4")]
++    napi4::load();
++    #[cfg(feature = "napi-5")]
++    napi5::load();
++    #[cfg(feature = "napi-6")]
++    napi6::load();
++    #[cfg(feature = "napi-8")]
++    napi8::load();
++    Ok(())
++}
++
+ // This symbol is loaded separately because it is a prerequisite
++#[cfg(not(target_family = "wasm"))]
+ unsafe fn get_version(host: &libloading::Library, env: Env) -> Result<u32, libloading::Error> {
+     let get_version = host.get::<fn(Env, *mut u32) -> Status>(b"napi_get_version")?;
+     let mut version = 0;
+@@ -429,6 +444,7 @@
+     Ok(version)
+ }
+ 
++#[cfg(not(target_family = "wasm"))]
+ pub(crate) unsafe fn load(env: Env) -> Result<(), libloading::Error> {
+     #[cfg(not(windows))]
+     let host = libloading::os::unix::Library::this().into();
+diff -ruN a/src/sys/bindings/mod.rs b/src/sys/bindings/mod.rs
+--- a/src/sys/bindings/mod.rs	2026-11-22 07:33:43.903996146 -0500
++++ b/src/sys/bindings/mod.rs	2026-11-22 07:33:43.931650139 -0500
+@@ -137,6 +137,29 @@
+             }
+         };
+ 
++        #[cfg(target_family = "wasm")]
++        pub(super) unsafe fn load() {
++            #[allow(clashing_extern_declarations)]
++            mod imports {
++                #[allow(unused_imports)]
++                use super::*;
++                // emnapi provides Node-API in the `napi` import module.
++                #[link(wasm_import_module = "napi")]
++                unsafe extern "C" {
++                    $(
++                        #[link_name = napi_name!($name)]
++                        pub fn $name($($param: $ptype,)*)$( -> $rtype)*;
++                    )*
++                }
++            }
++            NAPI = Napi {
++                $(
++                    $name: imports::$name,
++                )*
++            };
++        }
++
++        #[cfg(not(target_family = "wasm"))]
+         pub(super) unsafe fn load(host: &libloading::Library) {
+             let print_warn = |err| eprintln!("WARN: {}", err);
+ 
+diff -ruN a/src/sys/buffer.rs b/src/sys/buffer.rs
+--- a/src/sys/buffer.rs	2026-11-22 07:33:43.904545150 -0500
++++ b/src/sys/buffer.rs	2026-11-22 07:33:43.932240760 -0500
+@@ -15,6 +15,24 @@
+     Ok(buf)
+ }
+ 
++#[cfg(target_family = "wasm")]
++pub unsafe fn uninitialized(env: Env, len: usize) -> Result<(Local, *mut u8), napi::Status> {
++    // A data pointer here would make emnapi return a view of the shared wasm
++    // memory, which browser APIs reject. Create an ordinary JS buffer instead.
++    let mut buf = MaybeUninit::uninit();
++    let status = napi::create_buffer(env, len, std::ptr::null_mut(), buf.as_mut_ptr());
++
++    match status {
++        Err(err @ napi::Status::PendingException) => return Err(err),
++        status => status.unwrap(),
++    };
++
++    let buf = buf.assume_init();
++    let bytes = as_mut_slice(env, buf).as_mut_ptr();
++    Ok((buf, bytes))
++}
++
++#[cfg(not(target_family = "wasm"))]
+ pub unsafe fn uninitialized(env: Env, len: usize) -> Result<(Local, *mut u8), napi::Status> {
+     let mut buf = MaybeUninit::uninit();
+     let mut bytes = MaybeUninit::uninit();
+@@ -70,6 +88,9 @@
+         return &mut [];
+     }
+ 
++    #[cfg(target_family = "wasm")]
++    super::wasm_memory::mark_dirty(buf);
++
+     slice::from_raw_parts_mut(data.assume_init().cast(), size)
+ }
+ 
+diff -ruN a/src/sys/fun.rs b/src/sys/fun.rs
+--- a/src/sys/fun.rs	2026-11-22 07:33:43.906176012 -0500
++++ b/src/sys/fun.rs	2026-11-22 07:33:43.933946893 -0500
+@@ -80,6 +80,10 @@
+ 
+     let callback = &*data.assume_init().cast::<F>();
+ 
++    #[cfg(target_family = "wasm")]
++    return super::wasm_memory::call(env, || callback(env, info));
++
++    #[cfg(not(target_family = "wasm"))]
+     callback(env, info)
+ }
+ 
+diff -ruN a/src/sys/mod.rs b/src/sys/mod.rs
+--- a/src/sys/mod.rs	2026-11-22 07:33:43.906854979 -0500
++++ b/src/sys/mod.rs	2026-11-22 07:33:43.934671906 -0500
+@@ -91,6 +91,8 @@
+ pub(crate) mod string;
+ pub(crate) mod tag;
+ pub(crate) mod typedarray;
++#[cfg(target_family = "wasm")]
++pub(crate) mod wasm_memory;
+ 
+ pub mod bindings;
+ 
+diff -ruN a/src/sys/tsfn.rs b/src/sys/tsfn.rs
+--- a/src/sys/tsfn.rs	2026-11-22 07:33:43.909351427 -0500
++++ b/src/sys/tsfn.rs	2026-11-22 07:33:43.937287845 -0500
+@@ -165,9 +165,20 @@
+     ) {
+         let Callback { callback, data } = *Box::from_raw(data as *mut Callback<T>);
+ 
+-        BOUNDARY.catch_failure(env, None, move |env| {
+-            callback(env, data);
+-            ptr::null_mut()
++        #[cfg(target_family = "wasm")]
++        let run = |f: &mut dyn FnMut()| super::wasm_memory::call(env, || f());
++        #[cfg(not(target_family = "wasm"))]
++        let run = |f: &mut dyn FnMut()| f();
++        let mut work = Some(move || {
++            BOUNDARY.catch_failure(env, None, move |env| {
++                callback(env, data);
++                ptr::null_mut()
++            });
++        });
++        run(&mut || {
++            if let Some(work) = work.take() {
++                work()
++            }
+         });
+     }
+ }
+diff -ruN a/src/sys/wasm_memory.rs b/src/sys/wasm_memory.rs
+--- a/src/sys/wasm_memory.rs	1969-12-31 19:00:00.000000000 -0500
++++ b/src/sys/wasm_memory.rs	2026-11-22 07:33:43.937745689 -0500
+@@ -0,0 +1,88 @@
++//! WebAssembly (emnapi) memory synchronization.
++//!
++//! JavaScript buffers can't alias wasm linear memory, so emnapi gives Rust a
++//! copy of a JS buffer's bytes in linear memory. Reads are refreshed on every
++//! access; writes must be copied back with `emnapi_sync_memory`. Every Neon
++//! path that hands Rust a mutable view records the buffer here, and the
++//! recorded buffers are synchronized before control returns to JavaScript.
++//!
++//! Buffers are tracked per call depth, so a nested Rust → JS → Rust call only
++//! flushes the buffers it touched; outer buffers stay recorded until the outer
++//! call returns.
++
++use std::cell::{Cell, RefCell};
++
++use super::{
++    bindings as napi,
++    raw::{Env, Local},
++};
++
++#[link(wasm_import_module = "emnapi")]
++unsafe extern "C" {
++    fn emnapi_sync_memory(
++        env: Env,
++        js_to_wasm: bool,
++        value: *mut Local,
++        offset: usize,
++        length: usize,
++    ) -> napi::Status;
++}
++
++thread_local! {
++    static DEPTH: Cell<u32> = const { Cell::new(0) };
++    static DIRTY: RefCell<Vec<(u32, Local)>> = const { RefCell::new(Vec::new()) };
++}
++
++/// Records a buffer, typed array or `ArrayBuffer` that Rust may write.
++pub unsafe fn mark_dirty(value: Local) {
++    let depth = DEPTH.with(Cell::get);
++    DIRTY.with(|dirty| dirty.borrow_mut().push((depth, value)));
++}
++
++/// Runs `f` as one JS → Rust call and synchronizes the buffers it wrote.
++pub unsafe fn call<R>(env: Env, f: impl FnOnce() -> R) -> R {
++    let depth = DEPTH.with(|depth| {
++        depth.set(depth.get() + 1);
++        depth.get()
++    });
++    let result = f();
++    flush(env, depth);
++    DEPTH.with(|value| value.set(depth - 1));
++    result
++}
++
++/// Like [`call`], for code that can't easily be wrapped in a closure: one call
++/// level that flushes its buffers when dropped.
++pub struct Flush {
++    env: Env,
++    depth: u32,
++}
++
++impl Flush {
++    pub unsafe fn new(env: Env) -> Self {
++        let depth = DEPTH.with(|depth| {
++            depth.set(depth.get() + 1);
++            depth.get()
++        });
++        Flush { env, depth }
++    }
++}
++
++impl Drop for Flush {
++    fn drop(&mut self) {
++        unsafe { flush(self.env, self.depth) };
++        DEPTH.with(|value| value.set(self.depth - 1));
++    }
++}
++
++unsafe fn flush(env: Env, depth: u32) {
++    let pending: Vec<Local> = DIRTY.with(|dirty| {
++        let mut dirty = dirty.borrow_mut();
++        let split = dirty.iter().position(|(d, _)| *d >= depth).unwrap_or(dirty.len());
++        dirty.split_off(split).into_iter().map(|(_, value)| value).collect()
++    });
++    for mut value in pending {
++        // The whole buffer: emnapi treats u32::MAX (usize::MAX on wasm32) as "to the end".
++        let _ = unsafe { emnapi_sync_memory(env, false, &mut value, 0, usize::MAX) };
++    }
++}
+diff -ruN a/src/types_impl/buffer/types.rs b/src/types_impl/buffer/types.rs
+--- a/src/types_impl/buffer/types.rs	2026-11-22 07:33:43.912519417 -0500
++++ b/src/types_impl/buffer/types.rs	2026-11-22 07:33:43.940765182 -0500
+@@ -564,6 +564,8 @@
+             let env = cx.env().to_raw();
+             let value = self.to_local();
+             let info = sys::typedarray::info(env, value);
++            #[cfg(target_family = "wasm")]
++            sys::wasm_memory::mark_dirty(value);
+ 
+             slice_from_info_mut(info)
+         }
+@@ -597,6 +599,8 @@
+             let env = lock.cx.env().to_raw();
+             let value = self.to_local();
+             let info = sys::typedarray::info(env, value);
++            #[cfg(target_family = "wasm")]
++            sys::wasm_memory::mark_dirty(value);
+ 
+             // The borrowed data must be guarded by `Ledger` before returning
+             Ledger::try_borrow_mut(&lock.ledger, slice_from_info_mut(info))

@@ -17,6 +17,7 @@ import {
 	type Snapshot,
 	type WindowOptions,
 } from "../shared/types";
+import { isWasmAddonCandidate } from "../shared/wasm-addons";
 import { resolveEntry } from "./importer";
 import { encodeProxyURL, type PageProxy, type ProxySession } from "./proxy";
 import type { AppStorage } from "./storage";
@@ -256,7 +257,12 @@ export class RuntimeHost {
 					`Entry point not found: ${applicationEntry(app)}. Import the entire installed resources folder or its ZIP; the selected package may be a renderer/update archive without the Electron bootstrap.`,
 				);
 			app.entryPoint = entry;
-			await this.proxy.configure(wisp, this.instanceId, app);
+			await this.proxy.configure(
+				wisp,
+				this.instanceId,
+				app,
+				Object.keys(this.snapshot).some(isWasmAddonCandidate),
+			);
 			const worker = new Worker(runtimePath("runtime/main-worker.js"), {
 				name: `neutron:${app.manifest.name}`,
 			});

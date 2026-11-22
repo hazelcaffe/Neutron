@@ -1,0 +1,6 @@
+{
+	"libsignal": "0.106.2",
+	"file": "libsignal-client-0.106.2.wasm",
+	"sha256": "954b13930a82340cad6639a8262ab45bc9d77980690408dc960074e237ed4149",
+	"url": "https://github.com/hazelcaffe/Neutron/releases/download/libsignal-wasm-0.106.2-neutron.1/libsignal-client-0.106.2.wasm"
+}

@@ -1,0 +1,126 @@
+diff -ruN a/src/distributed_slice.rs b/src/distributed_slice.rs
+--- a/src/distributed_slice.rs	2026-11-22 07:33:43.964263069 -0500
++++ b/src/distributed_slice.rs	2026-11-22 07:33:43.979224279 -0500
+@@ -130,6 +130,7 @@
+ ///     /* ... */
+ /// }
+ /// ```
++#[cfg(not(target_family = "wasm"))]
+ pub struct DistributedSlice<T: ?Sized + Slice> {
+     name: &'static str,
+     stride: NonZeroUsize,
+@@ -139,6 +140,79 @@
+     dupcheck_stop: StaticPtr<isize>,
+ }
+ 
++#[cfg(target_family = "wasm")]
++pub struct DistributedSlice<T: ?Sized + Slice> {
++    name: &'static str,
++    registry: &'static WasmRegistry,
++    marker: core::marker::PhantomData<StaticPtr<T::Element>>,
++}
++
++/// Element addresses registered by `.init_array` constructors, and the slice
++/// assembled from them on first use. Constructors run in `_initialize`, before
++/// the module is used, so every element is registered by then.
++#[cfg(target_family = "wasm")]
++#[doc(hidden)]
++pub struct WasmRegistry {
++    entries: std::sync::Mutex<std::vec::Vec<usize>>,
++    slice: std::sync::OnceLock<(usize, usize)>,
++}
++
++#[cfg(target_family = "wasm")]
++impl WasmRegistry {
++    pub const fn new() -> Self {
++        WasmRegistry {
++            entries: std::sync::Mutex::new(std::vec::Vec::new()),
++            slice: std::sync::OnceLock::new(),
++        }
++    }
++}
++
++#[cfg(target_family = "wasm")]
++impl<T> DistributedSlice<[T]> {
++    #[doc(hidden)]
++    pub const unsafe fn private_wasm_new(name: &'static str, registry: &'static WasmRegistry) -> Self {
++        DistributedSlice {
++            name,
++            registry,
++            marker: core::marker::PhantomData,
++        }
++    }
++
++    #[doc(hidden)]
++    pub unsafe fn private_wasm_register(self, element: *const T) {
++        self.registry
++            .entries
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .push(element as usize);
++    }
++
++    #[doc(hidden)]
++    #[inline]
++    pub unsafe fn private_typecheck(self, get: fn() -> &'static T) {
++        let _ = get;
++    }
++
++    pub fn static_slice(self) -> &'static [T] {
++        let _ = self.name;
++        let (start, len) = *self.registry.slice.get_or_init(|| {
++            let entries = self
++                .registry
++                .entries
++                .lock()
++                .unwrap_or_else(|poisoned| poisoned.into_inner());
++            let mut items = std::vec::Vec::with_capacity(entries.len());
++            for &address in entries.iter() {
++                // Elements are immutable statics that are never dropped.
++                items.push(unsafe { core::ptr::read(address as *const T) });
++            }
++            let items: &'static [T] = std::boxed::Box::leak(items.into_boxed_slice());
++            (items.as_ptr() as usize, items.len())
++        });
++        unsafe { slice::from_raw_parts(start as *const T, len) }
++    }
++}
++
+ struct StaticPtr<T> {
+     ptr: *const T,
+ }
+@@ -155,6 +229,7 @@
+     }
+ }
+ 
++#[cfg(not(target_family = "wasm"))]
+ impl<T> DistributedSlice<[T]> {
+     #[doc(hidden)]
+     #[track_caller]
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2026-11-22 07:33:43.964831655 -0500
++++ b/src/lib.rs	2026-11-22 07:33:43.978416953 -0500
+@@ -147,6 +147,9 @@
+     clippy::unused_self
+ )]
+ 
++#[cfg(target_family = "wasm")]
++extern crate std;
++
+ mod distributed_slice;
+ mod private;
+ 
+diff -ruN a/src/private.rs b/src/private.rs
+--- a/src/private.rs	2026-11-22 07:33:43.965085684 -0500
++++ b/src/private.rs	2026-11-22 07:33:43.978896778 -0500
+@@ -15,6 +15,10 @@
+ #[doc(hidden)]
+ pub enum Void {}
+ 
++#[cfg(target_family = "wasm")]
++#[doc(hidden)]
++pub use crate::distributed_slice::WasmRegistry;
++
+ #[cfg(any(target_os = "uefi", target_os = "windows"))]
+ #[doc(hidden)]
+ pub type BoundaryElement<T> = core::mem::MaybeUninit<<T as Slice>::Element>;

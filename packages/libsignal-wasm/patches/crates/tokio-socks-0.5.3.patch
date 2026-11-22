@@ -1,0 +1,38 @@
+diff -ruN a/src/tcp/socks4.rs b/src/tcp/socks4.rs
+--- a/src/tcp/socks4.rs	2026-11-22 07:33:44.034523718 -0500
++++ b/src/tcp/socks4.rs	2026-11-22 07:33:44.049689311 -0500
+@@ -224,7 +224,14 @@
+     /// Connect to the proxy server, authenticate and issue the SOCKS command
+     pub async fn execute(&mut self) -> Result<Socks4Stream<TcpStream>> {
+         while let Some(next_addr) = self.proxy.next().await {
+-            let tcp = match TcpStream::connect(next_addr?).await {
++            #[cfg(target_os = "wasi")]
++            let tcp: std::io::Result<TcpStream> = {
++                let _ = next_addr?;
++                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "TCP sockets on WASI come from the embedder transport"))
++            };
++            #[cfg(not(target_os = "wasi"))]
++            let tcp = TcpStream::connect(next_addr?).await;
++            let tcp = match tcp {
+                 Ok(tcp) => tcp,
+                 Err(_) => continue,
+             };
+diff -ruN a/src/tcp/socks5.rs b/src/tcp/socks5.rs
+--- a/src/tcp/socks5.rs	2026-11-22 07:33:44.035588746 -0500
++++ b/src/tcp/socks5.rs	2026-11-22 07:33:44.050122819 -0500
+@@ -296,7 +296,14 @@
+     /// Connect to the proxy server, authenticate and issue the SOCKS command
+     pub async fn execute(&mut self) -> Result<Socks5Stream<TcpStream>> {
+         while let Some(next_addr) = self.proxy.next().await {
+-            let tcp = match TcpStream::connect(next_addr?).await {
++            #[cfg(target_os = "wasi")]
++            let tcp: std::io::Result<TcpStream> = {
++                let _ = next_addr?;
++                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "TCP sockets on WASI come from the embedder transport"))
++            };
++            #[cfg(not(target_os = "wasi"))]
++            let tcp = TcpStream::connect(next_addr?).await;
++            let tcp = match tcp {
+                 Ok(tcp) => tcp,
+                 Err(_) => continue,
+             };

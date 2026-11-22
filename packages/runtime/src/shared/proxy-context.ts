@@ -1,7 +1,7 @@
 import type { ProxyTransport, RawHeaders } from "@mercuryworkshop/proxy-transports";
 import type { CookieJar, ScramjetClient, ScramjetContext } from "@mercuryworkshop/scramjet";
 import type { ProxySession } from "../core/proxy";
-import { runtimeBase, runtimePath, scramjetPrefix } from "./base";
+import { barrierPrefix, runtimeBase, runtimePath, scramjetPrefix } from "./base";
 
 export type ProxyBootstrap = ProxySession & {
 	hostOrigin: string;
@@ -11,6 +11,8 @@ export type ProxyBootstrap = ProxySession & {
 	cookies: string;
 	headers: RawHeaders;
 	history: { url: string }[];
+	/** Token of the document's barrier script (see ProxySession.addonBarrier). */
+	barrier?: string;
 };
 export interface FetchResponse {
 	body?: string | Uint8Array | ArrayBuffer | ReadableStream | Blob;
@@ -66,6 +68,11 @@ export function proxyContext(
 			codecEncode: encodeURIComponent,
 			codecDecode: decodeURIComponent,
 			getInjectScripts(meta, _handler, html, script) {
+				// A parser-blocking script the service worker holds until renderer.js
+				// releases it, so the app's own scripts run after preloads that
+				// needed asynchronous setup.
+				const barrier =
+					session.addonBarrier && !session.browser ? crypto.randomUUID() : undefined;
 				const config: ProxyBootstrap = {
 					...session,
 					hostOrigin: origin,
@@ -74,6 +81,7 @@ export function proxyContext(
 					cookies: context.cookieJar.dump(),
 					headers: html.headers || [],
 					history: html.history || [],
+					...(barrier && { barrier }),
 				};
 				const source = `globalThis.__neutronProxyBootstrap=${JSON.stringify(config)};`;
 				return [
@@ -91,6 +99,7 @@ export function proxyContext(
 					...(session.browser
 						? []
 						: [script(`${origin}${runtimePath("runtime/renderer.js")}`)]),
+					...(barrier ? [script(`${origin}${barrierPrefix()}${barrier}`)] : []),
 				];
 			},
 			getWorkerInjectScripts(meta, isModule, script) {

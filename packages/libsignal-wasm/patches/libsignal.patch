@@ -1,0 +1,463 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 919bf3a..435273e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3395,8 +3395,6 @@ dependencies = [
+ [[package]]
+ name = "linkme"
+ version = "0.3.36"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e83272d46373fb8decca684579ac3e7c8f3d71d4cc3aa693df8759e260ae41cf"
+ dependencies = [
+  "linkme-impl",
+ ]
+@@ -3404,8 +3402,6 @@ dependencies = [
+ [[package]]
+ name = "linkme-impl"
+ version = "0.3.36"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "32d59e20403c7d08fe62b4376edfe5c7fb2ef1e6b1465379686d0f21c8df444b"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -3659,8 +3655,6 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
+ [[package]]
+ name = "neon"
+ version = "1.1.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "74c1d298c79e60a3f5a1e638ace1f9c1229d2a97bd3a9e40a63b67c8efa0f1e1"
+ dependencies = [
+  "either",
+  "libloading",
+@@ -5611,8 +5605,6 @@ dependencies = [
+ [[package]]
+ name = "tokio"
+ version = "1.54.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
+ dependencies = [
+  "bytes",
+  "libc",
+@@ -5647,8 +5639,6 @@ dependencies = [
+ [[package]]
+ name = "tokio-socks"
+ version = "0.5.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a7e2948f60dbe26b35f2c7fb74ac2854c1fddded0fe9d7548fcc674a246f7615"
+ dependencies = [
+  "either",
+  "futures-util",
+@@ -5671,8 +5661,6 @@ dependencies = [
+ [[package]]
+ name = "tokio-tungstenite"
+ version = "0.29.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
+ dependencies = [
+  "futures-util",
+  "log",
+diff --git a/Cargo.toml b/Cargo.toml
+index 5705156..af3b888 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -260,6 +260,15 @@ zeroize = "1.8.2"
+ boring = { git = 'https://github.com/signalapp/boring', tag = "signal-v5.3.0" }
+ boring-sys = { git = 'https://github.com/signalapp/boring', tag = "signal-v5.3.0" }
+ 
++# Neutron: WebAssembly (wasm32-wasip1-threads) support; see packages/libsignal-wasm
++# in https://github.com/hazelcaffe/Neutron.
++neon = { path = "neutron/crates/neon-1.1.1" }
++linkme = { path = "neutron/crates/linkme-0.3.36" }
++linkme-impl = { path = "neutron/crates/linkme-impl-0.3.36" }
++tokio-socks = { path = "neutron/crates/tokio-socks-0.5.3" }
++tokio-tungstenite = { path = "neutron/crates/tokio-tungstenite-0.29.0" }
++tokio = { path = "neutron/crates/tokio-1.54.1" }
++
+ [profile.dev.package.argon2]
+ opt-level = 2 # libsignal-account-keys unit tests are too slow with an unoptimized argon2
+ 
+diff --git a/rust/bridge/shared/types/src/net/tokio.rs b/rust/bridge/shared/types/src/net/tokio.rs
+index d321847..81f4099 100644
+--- a/rust/bridge/shared/types/src/net/tokio.rs
++++ b/rust/bridge/shared/types/src/net/tokio.rs
+@@ -40,9 +40,15 @@ impl TokioAsyncContext {
+     fn default_runtime_builder() -> tokio::runtime::Builder {
+         let mut builder = tokio::runtime::Builder::new_multi_thread();
+         builder
+-            .enable_io()
+             .enable_time()
+             .thread_name("libsignal-tokio-worker");
++        // On WASI, mio can't wake a thread blocked in poll_oneoff, so a worker
++        // parked in the I/O driver would ignore wakeups from other threads until
++        // its next timer. Sockets there come from the embedder (see
++        // libsignal_net_infra::wasi_tcp), which wakes tasks itself; without an
++        // I/O driver, idle workers park on a condvar that can be notified.
++        #[cfg(not(target_os = "wasi"))]
++        builder.enable_io();
+         builder
+     }
+ 
+diff --git a/rust/net/infra/src/certs.rs b/rust/net/infra/src/certs.rs
+index 7aad774..10029f5 100644
+--- a/rust/net/infra/src/certs.rs
++++ b/rust/net/infra/src/certs.rs
+@@ -164,11 +164,12 @@ impl RootCertificates {
+                 static VERIFIER: OnceLock<Box<dyn LimitedServerCertVerifier>> = OnceLock::new();
+ 
+                 let verifier = VERIFIER.get_or_init(|| {
+-                    let crypto_provider = if cfg!(target_os = "linux") {
++                    let crypto_provider = if cfg!(any(target_os = "linux", target_os = "wasi")) {
+                         // On Linux rustls-platform-verifier uses the webpki crate, which requires a
+-                        // rustls CryptoProvider. On the other platforms, rustls-platform-verifier ought
+-                        // to work even with no provider set, so we omit this to avoid taking a
+-                        // dependency on ring.
++                        // rustls CryptoProvider. So does WebAssembly, where it verifies against
++                        // the bundled Mozilla roots (webpki-root-certs). On the other platforms,
++                        // rustls-platform-verifier ought to work even with no provider set, so we
++                        // omit this to avoid taking a dependency on ring.
+                         rustls::crypto::ring::default_provider()
+                     } else {
+                         rustls::crypto::CryptoProvider {
+diff --git a/rust/net/infra/src/dns/custom_resolver.rs b/rust/net/infra/src/dns/custom_resolver.rs
+index 05fdc42..220a8cd 100644
+--- a/rust/net/infra/src/dns/custom_resolver.rs
++++ b/rust/net/infra/src/dns/custom_resolver.rs
+@@ -202,6 +202,17 @@ where
+         let transport = result.map_err(|_| dns::DnsError::TransportFailure)?;
+ 
+         let (ipv4_res_rx, ipv6_res_rx) = self.send_dns_queries(transport, request);
++        // On WASI there is no system resolver to omit IPv6 on hosts without it
++        // (AI_ADDRCONFIG), and the embedder's relay may lack IPv6 entirely, so
++        // an IPv6-only answer can leave no usable route. Wait for both answers;
++        // they share one DoH connection, and the lookup task's own timeout
++        // still bounds them (it drops the senders).
++        #[cfg(target_os = "wasi")]
++        let (maybe_ipv4, maybe_ipv6) = futures_util::join!(
++            ipv4_res_rx.map(Result::ok),
++            ipv6_res_rx.map(Result::ok)
++        );
++        #[cfg(not(target_os = "wasi"))]
+         let (maybe_ipv4, maybe_ipv6) = results_within_interval(
+             ipv4_res_rx.map(Result::ok),
+             ipv6_res_rx.map(Result::ok),
+diff --git a/rust/net/infra/src/lib.rs b/rust/net/infra/src/lib.rs
+index 1845420..4303daa 100644
+--- a/rust/net/infra/src/lib.rs
++++ b/rust/net/infra/src/lib.rs
+@@ -18,6 +18,8 @@ use crate::errors::RetryLater;
+ use crate::host::Host;
+ use crate::timeouts::{WS_KEEP_ALIVE_INTERVAL, WS_MAX_IDLE_INTERVAL};
+ 
++#[cfg(target_os = "wasi")]
++pub mod wasi_tcp;
+ pub mod certs;
+ pub mod dns;
+ pub mod errors;
+diff --git a/rust/net/infra/src/route/connect/interface_monitor.rs b/rust/net/infra/src/route/connect/interface_monitor.rs
+index f429c06..76dcc0c 100644
+--- a/rust/net/infra/src/route/connect/interface_monitor.rs
++++ b/rust/net/infra/src/route/connect/interface_monitor.rs
+@@ -157,6 +157,11 @@ impl GetCurrentInterface for DefaultGetCurrentInterface {
+             std::net::Ipv6Addr::UNSPECIFIED.into()
+         };
+ 
++        // A browser exposes no local interface addresses.
++        #[cfg(target_os = "wasi")]
++        return unspecified;
++
++        #[cfg(not(target_os = "wasi"))]
+         tokio::net::UdpSocket::bind((unspecified, 0))
+             .and_then(|socket| async move {
+                 // We won't send any packets (UDP connect is a local-only action), but just in case the
+diff --git a/rust/net/infra/src/tcp_ssl.rs b/rust/net/infra/src/tcp_ssl.rs
+index ad5adc3..deefa80 100644
+--- a/rust/net/infra/src/tcp_ssl.rs
++++ b/rust/net/infra/src/tcp_ssl.rs
+@@ -29,7 +29,9 @@ pub const LONG_TLS_HANDSHAKE_THRESHOLD: Duration = Duration::from_secs(3);
+ 
+ #[cfg(target_os = "macos")]
+ pub type TcpStream = crate::stream::WorkaroundWriteBugDuplexStream<tokio::net::TcpStream>;
+-#[cfg(not(target_os = "macos"))]
++#[cfg(target_os = "wasi")]
++pub type TcpStream = crate::wasi_tcp::JsTcpStream;
++#[cfg(not(any(target_os = "macos", target_os = "wasi")))]
+ pub type TcpStream = tokio::net::TcpStream;
+ 
+ #[derive(Clone, Debug)]
+@@ -128,7 +130,10 @@ impl Connector<TcpRoute<IpAddr>, ()> for StatelessTcp {
+             let start = tokio::time::Instant::now();
+             let result = tokio::time::timeout(
+                 crate::timeouts::TCP_CONNECTION_TIMEOUT,
++                #[cfg(not(target_os = "wasi"))]
+                 tokio::net::TcpStream::connect((address, port.get())),
++                #[cfg(target_os = "wasi")]
++                crate::wasi_tcp::JsTcpStream::connect(address, port.get()),
+             )
+             .await
+             .map_err(|_| {
+diff --git a/rust/net/infra/src/wasi_tcp.rs b/rust/net/infra/src/wasi_tcp.rs
+new file mode 100644
+index 0000000..d3a2dc3
+--- /dev/null
++++ b/rust/net/infra/src/wasi_tcp.rs
+@@ -0,0 +1,260 @@
++//
++// Copyright 2026 Neutron contributors.
++// SPDX-License-Identifier: AGPL-3.0-only
++//
++
++//! TCP for `wasm32-wasip1-threads` builds hosted by an embedder (Neutron).
++//!
++//! WASI preview 1 has no outgoing sockets. The embedder owns each connection
++//! (raw TCP, e.g. over a Wisp relay) on a JavaScript thread that never blocks.
++//! Rust and the embedder share a [`Shared`] block per connection in linear
++//! memory: the embedder appends received bytes to its ring and wakes the
++//! reading task through [`neutron_tcp_wake`]. Connecting, sending and closing
++//! go through the `neutron` imports. TLS stays in this module's callers
++//! (BoringSSL), so certificate pinning is unchanged.
++//!
++//! The embedder side must not block, so everything it touches is lock-free:
++//! atomics in [`Shared`] and an [`AtomicWaker`].
++
++use std::cell::UnsafeCell;
++use std::io;
++use std::net::{IpAddr, Ipv4Addr, SocketAddr};
++use std::pin::Pin;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicU32, Ordering};
++use std::task::{Context, Poll};
++
++use futures_util::task::AtomicWaker;
++use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
++
++/// Receive ring capacity. The embedder keeps any excess queued until Rust
++/// reports progress through `neutron.tcp_consumed`.
++pub const RING_CAPACITY: u32 = 256 * 1024;
++
++const CONNECTING: u32 = 0;
++const OPEN: u32 = 1;
++const FAILED: u32 = 2;
++const EOF: u32 = 3;
++const RESET: u32 = 4;
++
++/// Shared with the embedder. Layout (byte offsets): `state` 0, `head` 4,
++/// `tail` 8, `sequence` 12, `ring` 16.
++#[repr(C, align(16))]
++pub struct Shared {
++    state: AtomicU32,
++    /// Total bytes the embedder has written to `ring` (wrapping).
++    head: AtomicU32,
++    /// Total bytes Rust has consumed from `ring` (wrapping).
++    tail: AtomicU32,
++    /// Owned by the embedder: numbers this connection's calls into it, which
++    /// can come from different threads, so it can apply them in order.
++    sequence: AtomicU32,
++    ring: UnsafeCell<[u8; RING_CAPACITY as usize]>,
++}
++
++// The ring is single-producer (embedder) single-consumer (Rust); ownership of
++// each region is transferred by the `head`/`tail` atomics.
++unsafe impl Sync for Shared {}
++
++/// `repr(C)` keeps `shared` at offset 0, so the embedder can use the
++/// documented [`Shared`] offsets relative to the pointer it is given.
++#[repr(C)]
++pub struct Inner {
++    shared: Shared,
++    waker: AtomicWaker,
++}
++
++#[link(wasm_import_module = "neutron")]
++unsafe extern "C" {
++    /// Opens a connection to `host:port`. `shared` is an `Inner` pointer; the
++    /// embedder passes it back to [`neutron_tcp_wake`] until it calls
++    /// [`neutron_tcp_release`] after `tcp_close`.
++    fn tcp_connect(shared: *const Inner, host: *const u8, host_len: usize, port: u16);
++    /// Sends bytes. The embedder copies them before returning.
++    fn tcp_write(shared: *const Inner, data: *const u8, len: usize);
++    /// Tells the embedder that ring space was freed.
++    fn tcp_consumed(shared: *const Inner);
++    /// Closes the connection. The embedder answers with `neutron_tcp_release`.
++    fn tcp_close(shared: *const Inner);
++}
++
++/// Called by the embedder (from any thread) after changing `state` or `head`.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn neutron_tcp_wake(shared: *const Inner) {
++    unsafe { (*shared).waker.wake() };
++}
++
++/// Called once by the embedder after `tcp_close`, when it will no longer
++/// touch the connection. Releases the embedder's reference.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn neutron_tcp_release(shared: *const Inner) {
++    drop(unsafe { Arc::from_raw(shared) });
++}
++
++/// Byte offset of the ring in an `Inner`, so the embedder can verify the layout.
++#[unsafe(no_mangle)]
++pub extern "C" fn neutron_tcp_ring_offset() -> u32 {
++    (std::mem::offset_of!(Inner, shared) + std::mem::offset_of!(Shared, ring)) as u32
++}
++
++/// Ring capacity in bytes, for the embedder.
++#[unsafe(no_mangle)]
++pub extern "C" fn neutron_tcp_ring_capacity() -> u32 {
++    RING_CAPACITY
++}
++
++pub struct JsTcpStream {
++    inner: Arc<Inner>,
++    peer: SocketAddr,
++    closed: bool,
++}
++
++impl std::fmt::Debug for JsTcpStream {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("JsTcpStream").field("peer", &self.peer).finish()
++    }
++}
++
++impl JsTcpStream {
++    /// Connects through the embedder. `address` is what DNS resolved; the
++    /// embedder connects to that exact address.
++    pub async fn connect(address: IpAddr, port: u16) -> io::Result<Self> {
++        let inner = Arc::new(Inner {
++            shared: Shared {
++                state: AtomicU32::new(CONNECTING),
++                head: AtomicU32::new(0),
++                tail: AtomicU32::new(0),
++                sequence: AtomicU32::new(0),
++                ring: UnsafeCell::new([0; RING_CAPACITY as usize]),
++            },
++            waker: AtomicWaker::new(),
++        });
++        let host = address.to_string();
++        // One reference belongs to the embedder until neutron_tcp_release.
++        let embedder = Arc::into_raw(inner.clone());
++        unsafe { tcp_connect(embedder, host.as_ptr(), host.len(), port) };
++        let stream = JsTcpStream {
++            inner,
++            peer: SocketAddr::new(address, port),
++            closed: false,
++        };
++        std::future::poll_fn(|cx| {
++            stream.inner.waker.register(cx.waker());
++            match stream.inner.shared.state.load(Ordering::Acquire) {
++                CONNECTING => Poll::Pending,
++                FAILED => Poll::Ready(Err(io::Error::new(
++                    io::ErrorKind::ConnectionRefused,
++                    "connection failed",
++                ))),
++                _ => Poll::Ready(Ok(())),
++            }
++        })
++        .await?;
++        Ok(stream)
++    }
++
++    pub fn set_nodelay(&self, _nodelay: bool) -> io::Result<()> {
++        // The relay owns the real socket; Nagle is its concern.
++        Ok(())
++    }
++
++    pub fn local_addr(&self) -> io::Result<SocketAddr> {
++        // The browser has no local socket address to report.
++        let unspecified = match self.peer.ip() {
++            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
++            IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
++        };
++        Ok(SocketAddr::new(unspecified, 0))
++    }
++
++    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
++        Ok(self.peer)
++    }
++
++    fn close(&mut self) {
++        if !self.closed {
++            self.closed = true;
++            unsafe { tcp_close(Arc::as_ptr(&self.inner)) };
++        }
++    }
++}
++
++impl Drop for JsTcpStream {
++    fn drop(&mut self) {
++        self.close();
++    }
++}
++
++impl AsyncRead for JsTcpStream {
++    fn poll_read(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &mut ReadBuf<'_>,
++    ) -> Poll<io::Result<()>> {
++        let shared = &self.inner.shared;
++        self.inner.waker.register(cx.waker());
++        let head = shared.head.load(Ordering::Acquire);
++        let tail = shared.tail.load(Ordering::Relaxed);
++        let available = head.wrapping_sub(tail);
++        if available == 0 {
++            return match shared.state.load(Ordering::Acquire) {
++                EOF => Poll::Ready(Ok(())),
++                RESET | FAILED => Poll::Ready(Err(io::Error::new(
++                    io::ErrorKind::ConnectionReset,
++                    "connection reset",
++                ))),
++                _ => Poll::Pending,
++            };
++        }
++        let count = (available as usize).min(buf.remaining());
++        let start = (tail % RING_CAPACITY) as usize;
++        let first = count.min(RING_CAPACITY as usize - start);
++        let ring = unsafe { &*shared.ring.get() };
++        buf.put_slice(&ring[start..start + first]);
++        if first < count {
++            buf.put_slice(&ring[..count - first]);
++        }
++        shared
++            .tail
++            .store(tail.wrapping_add(count as u32), Ordering::Release);
++        unsafe { tcp_consumed(Arc::as_ptr(&self.inner)) };
++        Poll::Ready(Ok(()))
++    }
++}
++
++impl AsyncWrite for JsTcpStream {
++    fn poll_write(
++        self: Pin<&mut Self>,
++        _cx: &mut Context<'_>,
++        data: &[u8],
++    ) -> Poll<io::Result<usize>> {
++        match self.inner.shared.state.load(Ordering::Acquire) {
++            OPEN | EOF => {
++                unsafe { tcp_write(Arc::as_ptr(&self.inner), data.as_ptr(), data.len()) };
++                Poll::Ready(Ok(data.len()))
++            }
++            _ => Poll::Ready(Err(io::Error::new(
++                io::ErrorKind::BrokenPipe,
++                "connection is not open",
++            ))),
++        }
++    }
++
++    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
++        Poll::Ready(Ok(()))
++    }
++
++    fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
++        self.close();
++        Poll::Ready(Ok(()))
++    }
++}
++
++impl crate::Connection for JsTcpStream {
++    fn transport_info(&self) -> crate::TransportInfo {
++        crate::TransportInfo {
++            local_addr: self.local_addr().expect("always available"),
++            remote_addr: self.peer,
++        }
++    }
++}

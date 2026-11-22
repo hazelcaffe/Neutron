@@ -18,6 +18,7 @@ import { configureCompatibility } from "./fallback";
 import { VirtualFileSystem } from "./filesystem";
 import { ModuleLoader } from "./loader";
 import { LoopbackRegistry } from "./loopback";
+import { fileText, WasmAddons } from "./napi-wasm";
 import { loadCurl, Network } from "./network";
 import { processModules } from "./processes";
 import { answerRpc, RpcClient } from "./rpc";
@@ -225,7 +226,15 @@ globalThis.addEventListener("message", async (event: MessageEvent<Record<string,
 			builtins.worker_threads = processes.worker_threads;
 			builtins.child_process = processes.child_process;
 			Object.assign(runtime.electron, { utilityProcess: processes.utilityProcess });
-			const loader = new ModuleLoader(vfs, builtins, globals, curlAddonLoader(network));
+			const addons = new WasmAddons(
+				fileText(vfs),
+				{
+					network,
+					log: (level, message) => send({ type: "log", level, source: "main", message }),
+				},
+				curlAddonLoader(network),
+			);
+			const loader = new ModuleLoader(vfs, builtins, globals, addons.load);
 			builtins.module = loader.moduleBuiltin(applicationEntry(config.app));
 			const entry = applicationEntry(config.app);
 			const started = () => {

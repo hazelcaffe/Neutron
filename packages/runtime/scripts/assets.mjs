@@ -1,8 +1,9 @@
 import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { libsignalWasm } from "../../libsignal-wasm/fetch.mjs";
 
 const require = createRequire(import.meta.url);
 /** The runtime package root. Sources and dependencies resolve from here. */
@@ -128,6 +129,14 @@ export async function buildAssets(out = defaultAssetsDir) {
 			}
 		}
 	}
+	// Native addons rebuilt for WebAssembly (packages/libsignal-wasm). Optional:
+	// without them, apps get Neutron's usual fallback for the native addon.
+	const libsignal = await libsignalWasm();
+	if (libsignal)
+		await atomicWrite(
+			`${out}/vendor/libsignal/${basename(libsignal)}`,
+			await readFile(libsignal),
+		);
 	await mkdir(`${out}/runtime`, { recursive: true });
 	// Build runtime contexts as classic bundles: the renderer must execute before app scripts.
 	const aliases = {
@@ -158,6 +167,7 @@ export async function buildAssets(out = defaultAssetsDir) {
 			"proxy-client",
 			"sqlite-bootstrap",
 			"xhr-worker",
+			"napi-thread",
 		].map(async (name) => {
 			const result = await build({
 				entryPoints: [resolve(root, `src/runtime/${name}.ts`)],

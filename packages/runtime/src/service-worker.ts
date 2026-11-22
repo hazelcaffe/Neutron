@@ -3,6 +3,7 @@ import { browserLoopback } from "./core/loopback-fetch";
 import { configureProxy, proxyCookies, proxyFetch } from "./core/proxy-worker";
 import { AppStorage } from "./core/storage";
 import {
+	barrierPrefix,
 	baseFromScript,
 	filePrefix,
 	protocolPrefix,
@@ -256,9 +257,45 @@ async function protocolResponse(
 		});
 	});
 }
+// An app document's barrier script (ProxySession.addonBarrier). Parsing stops
+// at it until its renderer.js finishes asynchronous preload setup, so the
+// app's own scripts still run after its preloads. The renderer answers
+// "waiting" with "ready" once done, and also sends "ready" unprompted.
+function barrier(token: string): Promise<Response> {
+	return new Promise((resolve) => {
+		const channel = new BroadcastChannel(`neutron-barrier:${token}`);
+		const release = (body = "") => {
+			clearTimeout(timer);
+			channel.close();
+			resolve(
+				new Response(body, {
+					headers: { "Content-Type": "text/javascript", "Cache-Control": "no-store" },
+				}),
+			);
+		};
+		// A renderer that failed to load must not hang the document.
+		const timer = setTimeout(
+			() => release('console.warn("Neutron: renderer setup timed out");'),
+			60_000,
+		);
+		channel.onmessage = (event) => {
+			if (event.data === "ready") release();
+		};
+		channel.postMessage("waiting");
+	});
+}
 self.addEventListener("fetch", (event) => {
 	const url = new URL(event.request.url);
 	if (url.origin !== self.location.origin) return;
+	if (url.pathname.startsWith(barrierPrefix())) {
+		const token = url.pathname.slice(barrierPrefix().length);
+		event.respondWith(
+			/^[\da-f-]{36}$/i.test(token)
+				? barrier(token)
+				: Promise.resolve(new Response("Invalid barrier", { status: 400 })),
+		);
+		return;
+	}
 	if (url.pathname.startsWith(runtimePath("__scramjet__/"))) {
 		event.respondWith(
 			proxyFetch(event, async (session, target, request, callback) => {

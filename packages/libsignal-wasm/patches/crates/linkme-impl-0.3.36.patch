@@ -1,0 +1,50 @@
+diff -ruN a/src/declaration.rs b/src/declaration.rs
+--- a/src/declaration.rs	2026-11-22 07:33:44.009595379 -0500
++++ b/src/declaration.rs	2026-11-22 07:33:44.016066437 -0500
+@@ -130,7 +130,19 @@
+         (Ident::new("unsafe", call_site), quote!(link_section))
+     };
+ 
++    let wasm_attrs = attrs.clone();
+     quote! {
++        // WebAssembly linkers have no section start/stop symbols. Each element
++        // registers itself from a static constructor (.init_array) instead.
++        #[cfg(target_family = "wasm")]
++        #(#wasm_attrs)*
++        #vis static #ident: #linkme_path::DistributedSlice<#ty> = {
++            static REGISTRY: #linkme_path::#private::WasmRegistry =
++                #linkme_path::#private::WasmRegistry::new();
++            unsafe { #linkme_path::DistributedSlice::private_wasm_new(#name, &REGISTRY) }
++        };
++
++        #[cfg(not(target_family = "wasm"))]
+         #(#attrs)*
+         #vis static #ident: #linkme_path::DistributedSlice<#ty> = {
+             #[cfg(any(
+diff -ruN a/src/element.rs b/src/element.rs
+--- a/src/element.rs	2026-11-22 07:33:44.009938344 -0500
++++ b/src/element.rs	2026-11-22 07:33:44.016413515 -0500
+@@ -241,6 +241,23 @@
+             };
+         }
+ 
++        #[cfg(target_family = "wasm")]
++        const _: () = {
++            #[used]
++            #[unsafe(link_section = ".init_array")]
++            static __LINKME_WASM_REGISTER: unsafe extern "C" fn() = {
++                unsafe extern "C" fn __linkme_wasm_register() {
++                    unsafe {
++                        #linkme_path::DistributedSlice::private_wasm_register(
++                            #path,
++                            #linkme_path::#private::ptr::addr_of!(#ident),
++                        );
++                    }
++                }
++                __linkme_wasm_register
++            };
++        };
++
+         #orig_item
+     }
+ }

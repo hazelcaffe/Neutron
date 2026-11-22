@@ -12,13 +12,14 @@ import { curlAddonLoader } from "./curl-addon";
 import { configureCompatibility, noteStub, withFallback } from "./fallback";
 import { VirtualFileSystem } from "./filesystem";
 import { ModuleLoader } from "./loader";
+import { fileText, WasmAddons } from "./napi-wasm";
 import { Network } from "./network";
 import { vmModule } from "./optional";
 import { executePageScript } from "./page-script";
 import { processModules } from "./processes";
 import { RpcClient } from "./rpc";
 import { nodeTimers } from "./timers";
-import { embeddingHost } from "./transport";
+import { embeddingHost, hostScope } from "./transport";
 
 declare global {
 	interface Window {
@@ -26,7 +27,8 @@ declare global {
 	}
 }
 
-function boot(): void {
+/** Returns a promise when preloads wait for asynchronous setup. */
+function boot(): Promise<void> | undefined {
 	// Local app frames share this origin for synchronous require/preload. This is a
 	// compatibility boundary, NOT a hostile-code security boundary (see README).
 	const bridge = embeddingHost()?.__neutron;
@@ -287,11 +289,21 @@ function boot(): void {
 	);
 	builtins.worker_threads = processes.worker_threads;
 	builtins.child_process = processes.child_process;
+	const addons = new WasmAddons(
+		fileText(vfs),
+		{
+			network,
+			log: (level, message) =>
+				send({ type: "log", source: `renderer:${windowId}`, level, message }),
+		},
+		curlAddonLoader(network),
+	);
 	window.addEventListener("pagehide", () => {
 		processes.close();
 		network.close();
+		addons.close();
 	});
-	const loader = new ModuleLoader(vfs, builtins, globals, curlAddonLoader(network));
+	const loader = new ModuleLoader(vfs, builtins, globals, addons.load);
 	builtins.module = loader.moduleBuiltin(config.filename);
 	const options = (args: unknown[]) =>
 		(args.findLast((value) => value && typeof value === "object") || {}) as {
@@ -455,42 +467,77 @@ function boot(): void {
 			});
 		}
 	});
-	if (config.options.webPreferences?.nodeIntegration && !isolated)
+	const nodeIntegration = Boolean(config.options.webPreferences?.nodeIntegration && !isolated);
+	if (nodeIntegration)
 		Object.assign(window, globals, {
 			require: loader.requireFor(config.filename),
 			__filename: config.filename,
 			__dirname: path.dirname(config.filename),
 			module: { exports: {} },
 		});
-	for (const preload of new Set(
+	const preloads = new Set(
 		[
 			...(config.options.webPreferences?.sessionPreloads || []),
 			config.options.webPreferences?.preload,
 		].filter((value): value is string => Boolean(value)),
-	)) {
-		try {
-			loader.run(path.resolve(applicationPath(config.app), vfs.normalizePath(preload)));
-		} catch (error) {
-			console.error("Preload failed:", error);
-			send({
-				type: "window-event",
-				event: "preload-error",
-				args: [preload, errorText(error)],
-			});
+	);
+	const start = () => {
+		for (const preload of preloads) {
+			try {
+				loader.run(path.resolve(applicationPath(config.app), vfs.normalizePath(preload)));
+			} catch (error) {
+				console.error("Preload failed:", error);
+				send({
+					type: "window-event",
+					event: "preload-error",
+					args: [preload, errorText(error)],
+				});
+			}
 		}
-	}
-	const ready = () => {
-		titleChanged();
-		process.emit("loaded");
-		send({ type: "window-event", event: "dom-ready" });
-		convertFrames(document);
+		const ready = () => {
+			titleChanged();
+			process.emit("loaded");
+			send({ type: "window-event", event: "dom-ready" });
+			convertFrames(document);
+		};
+		if (document.readyState === "loading")
+			document.addEventListener("DOMContentLoaded", ready, { once: true });
+		else queueMicrotask(ready);
 	};
-	if (document.readyState === "loading")
-		document.addEventListener("DOMContentLoaded", ready, { once: true });
-	else queueMicrotask(ready);
+	// A page's main thread can only instantiate large WebAssembly modules
+	// asynchronously. Do it for the app's addon builds before any code that can
+	// require() them runs; the service worker's barrier script holds the page's
+	// own scripts meanwhile (ProxySession.addonBarrier).
+	if (preloads.size || nodeIntegration) {
+		return addons.prepare(Object.keys(config.snapshot)).then(start);
+	}
+	start();
 }
+
+/** Lets the document's barrier script (see service-worker.ts) load once setup is done. */
+function releaseBarrier(token: string, setup: Promise<void> | undefined): void {
+	const channel = new hostScope.BroadcastChannel(`neutron-barrier:${token}`);
+	let ready = false;
+	channel.onmessage = (event) => {
+		if (event.data === "waiting" && ready) channel.postMessage("ready");
+	};
+	// The barrier script has run by then, or the document is gone.
+	const close = () => channel.close();
+	document.addEventListener("DOMContentLoaded", close, { once: true });
+	window.addEventListener("pagehide", close, { once: true });
+	void Promise.resolve(setup)
+		.catch((error: unknown) => console.error("Neutron renderer bootstrap failed", error))
+		.finally(() => {
+			ready = true;
+			channel.postMessage("ready");
+		});
+}
+
+let setup: Promise<void> | undefined;
 try {
-	boot();
+	setup = boot();
 } catch (error) {
 	console.error("Neutron renderer bootstrap failed", error);
 }
+const barrierToken = globalThis.__neutronProxyBootstrap?.barrier;
+if (barrierToken) releaseBarrier(barrierToken, setup);

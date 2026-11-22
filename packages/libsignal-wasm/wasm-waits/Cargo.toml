@@ -1,0 +1,12 @@
+[package]
+name = "neutron-wasm-waits"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Replaces memory.atomic.wait instructions with an imported function, so a browser main thread can spin instead of trapping."
+
+[dependencies]
+walrus = "0.28"
+anyhow = "1"
+
+[workspace]

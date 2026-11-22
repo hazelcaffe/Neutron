@@ -8,6 +8,7 @@ import { curlAddonLoader, isCurlAddon } from "./curl-addon";
 import { configureCompatibility, createStub } from "./fallback";
 import { VirtualFileSystem } from "./filesystem";
 import { ModuleLoader } from "./loader";
+import { fileText, WasmAddons } from "./napi-wasm";
 import { loadCurl, Network } from "./network";
 import {
 	MainMessagePort,
@@ -157,7 +158,15 @@ const receive = async (event: MessageEvent<Record<string, unknown>>) => {
 			},
 			child_process: processes.child_process,
 		});
-		const loader = new ModuleLoader(vfs, builtins, globals, curlAddonLoader(network));
+		const addons = new WasmAddons(
+			fileText(vfs),
+			{
+				network,
+				log: (level, message) => send({ type: "log", level, source: "worker", message }),
+			},
+			curlAddonLoader(network),
+		);
+		const loader = new ModuleLoader(vfs, builtins, globals, addons.load);
 		const filename = String(message.filename);
 		builtins.module = loader.moduleBuiltin(options.eval ? `${vfs.cwd}/${evalId}` : filename);
 		send({ type: "online" });

@@ -1,0 +1,32 @@
+diff -ruN a/src/runtime/park.rs b/src/runtime/park.rs
+--- a/src/runtime/park.rs	2026-11-22 09:46:58.331243216 -0500
++++ b/src/runtime/park.rs	2026-11-22 09:46:58.357955486 -0500
+@@ -223,14 +223,26 @@
+             Err(actual) => panic!("inconsistent park_timeout state; actual = {actual}"),
+         }
+ 
+-        #[cfg(not(all(target_family = "wasm", not(target_feature = "atomics"))))]
++        // Stable rustc doesn't report `target_feature = "atomics"`, even on
++        // wasm32-wasip1-threads, so on WASI use the condvar regardless: std's
++        // Condvar waits on a futex with threads and just sleeps without them.
++        // Sleeping instead would ignore unparks from other threads.
++        #[cfg(not(all(
++            target_family = "wasm",
++            not(target_feature = "atomics"),
++            not(target_os = "wasi")
++        )))]
+         // Wait with a timeout, and if we spuriously wake up or otherwise wake up
+         // from a notification, we just want to unconditionally set the state back to
+         // empty, either consuming a notification or un-flagging ourselves as
+         // parked.
+         let (_m, _result) = self.condvar.wait_timeout(m, dur).unwrap();
+ 
+-        #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
++        #[cfg(all(
++            target_family = "wasm",
++            not(target_feature = "atomics"),
++            not(target_os = "wasi")
++        ))]
+         // Wasm without atomics doesn't have threads, so just sleep.
+         {
+             let _m = m;

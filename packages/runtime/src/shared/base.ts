@@ -42,3 +42,4 @@ export const scramjetPrefix = (session: string) => runtimePath(`__scramjet__/${s
 export const filePrefix = () => runtimePath("__neutron__/");
 export const protocolPrefix = () => runtimePath("__neutron_protocol__/");
 export const syncPrefix = () => runtimePath("__neutron_sync__/");
+export const barrierPrefix = () => runtimePath("__neutron_barrier__/");

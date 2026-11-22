@@ -1,0 +1,17 @@
+diff -ruN a/src/connect.rs b/src/connect.rs
+--- a/src/connect.rs	2026-11-22 07:33:44.072494162 -0500
++++ b/src/connect.rs	2026-11-22 07:33:44.081440291 -0500
+@@ -88,7 +88,13 @@
+         .ok_or(Error::Url(UrlError::UnsupportedUrlScheme))?;
+ 
+     let addr = format!("{domain}:{port}");
++    #[cfg(not(target_os = "wasi"))]
+     let socket = TcpStream::connect(addr).await.map_err(Error::Io)?;
++    #[cfg(target_os = "wasi")]
++    let socket: TcpStream = {
++        let _ = addr;
++        return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, "TCP sockets on WASI come from the embedder transport")));
++    };
+ 
+     if disable_nagle {
+         socket.set_nodelay(true)?;
