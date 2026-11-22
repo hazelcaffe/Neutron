@@ -159,7 +159,15 @@ globalThis.addEventListener("message", async (event: MessageEvent<Record<string,
 					throw error;
 				}
 			};
-			runtime = createElectron({ send, rpc, config, vfs, network, exit: process.exit });
+			runtime = createElectron({
+				send,
+				rpc,
+				config,
+				vfs,
+				network,
+				exit: process.exit,
+				argv: () => process.argv,
+			});
 			const protocolChannel = new BroadcastChannel(`neutron-protocol:${config.instanceId}`);
 			protocolChannel.onmessage = async (
 				event: MessageEvent<{

@@ -45,6 +45,8 @@ interface IpcEvent {
 interface Hooks {
 	send(message: unknown, transfer?: Transferable[]): void;
 	exit(code: number): void;
+	/** The main process's current `process.argv`. */
+	argv(): string[];
 	rpc: RpcClient;
 	config: RuntimeConfig;
 	vfs: VirtualFileSystem;
@@ -389,6 +391,29 @@ class WebContents extends EventEmitter {
 	}
 }
 
+/**
+ * The `additionalData` a second instance launched with `argv` would pass to
+ * requestSingleInstanceLock. Neutron runs no second process, but that process
+ * is the same program with a different command line: wherever this instance's
+ * data holds a copy of its own argv, the second instance's holds its argv.
+ */
+export function secondInstanceData(data: unknown, ownArgv: string[], argv: string[]): unknown {
+	const isOwnArgv = (value: unknown) =>
+		Array.isArray(value) &&
+		value.length === ownArgv.length &&
+		value.every((item, index) => item === ownArgv[index]);
+	const visit = (value: unknown): unknown => {
+		if (isOwnArgv(value)) return [...argv];
+		if (Array.isArray(value)) return value.map(visit);
+		if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype)
+			return Object.fromEntries(
+				Object.entries(value).map(([key, item]) => [key, visit(item)]),
+			);
+		return value;
+	};
+	return visit(data);
+}
+
 export function createElectron(hooks: Hooks) {
 	const { config, vfs, rpc, network } = hooks;
 	const sessionFor = (options: WindowOptions) =>
@@ -433,6 +458,8 @@ export function createElectron(hooks: Hooks) {
 	// the OS passes before the URL (setAsDefaultProtocolClient's `args`).
 	const linkSchemes = new Map<string, string[]>();
 	let singleInstance = false;
+	// What this instance passed to requestSingleInstanceLock, with its argv then.
+	let instanceData: { data: unknown; argv: string[] } = { data: {}, argv: [] };
 	let quitting = false;
 	let exiting = false;
 	let allClosedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -566,8 +593,15 @@ export function createElectron(hooks: Hooks) {
 				args: (options.args ?? config.argv ?? []).map(String),
 			});
 		},
-		requestSingleInstanceLock: () => {
+		requestSingleInstanceLock: (additionalData?: unknown) => {
 			singleInstance = true;
+			let data: unknown = {};
+			try {
+				if (additionalData !== undefined) data = structuredClone(additionalData);
+			} catch {
+				/* Electron sends only serializable data to the first instance. */
+			}
+			instanceData = { data, argv: [...hooks.argv()] };
 			return true;
 		},
 		releaseSingleInstanceLock: () => {
@@ -1664,14 +1698,16 @@ export function createElectron(hooks: Hooks) {
 			const platform = config.platform ?? "linux";
 			if (platform === "darwin" && app.listenerCount("open-url"))
 				return app.emit("open-url", cancelable(), value);
-			if (singleInstance)
+			if (singleInstance) {
+				const argv = [String(paths.exe), ...(platform === "win32" ? args : []), value];
 				return app.emit(
 					"second-instance",
 					cancelable(),
-					[paths.exe, ...(platform === "win32" ? args : []), value],
+					argv,
 					vfs.cwd,
-					{},
+					secondInstanceData(instanceData.data, instanceData.argv, argv),
 				);
+			}
 			// Neutron cannot start a second process for an app without the lock;
 			// a URL handler is the only remaining way to deliver the link.
 			return app.listenerCount("open-url") > 0 && app.emit("open-url", cancelable(), value);
