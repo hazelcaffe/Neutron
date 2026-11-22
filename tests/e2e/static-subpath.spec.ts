@@ -102,7 +102,9 @@ test("a subpath deployment without isolation headers runs apps, isolated", async
 ipcMain.on('sync',event=>event.returnValue=fs.readFileSync('/tmp/saved','utf8'));
 app.whenReady().then(async()=>{fs.writeFileSync('/tmp/saved','persisted');const api=await (await net.fetch('http://127.0.0.1:4175/api')).json();
 const w=new BrowserWindow({webPreferences:{nodeIntegration:true,contextIsolation:false}});await w.loadFile('index.html');
-await w.webContents.executeJavaScript('document.body.dataset.network='+JSON.stringify(api.message));});`,
+await w.webContents.executeJavaScript('document.body.dataset.network='+JSON.stringify(api.message));
+const zlib=require('zlib');const brotli=zlib.brotliDecompressSync(zlib.brotliCompressSync(Buffer.from('brotli round trip'))).toString();
+await w.webContents.executeJavaScript('document.body.dataset.brotli='+JSON.stringify(brotli));});`,
 		"index.html": `<html><head><title>Pages app</title><link rel="stylesheet" href="style.css"></head><body><p id="sync"></p><script>document.querySelector('#sync').textContent=require('electron').ipcRenderer.sendSync('sync')</script></body></html>`,
 		"style.css": "body{color:rgb(1, 2, 3)}",
 	});
@@ -114,6 +116,8 @@ await w.webContents.executeJavaScript('document.body.dataset.network='+JSON.stri
 	const app = page.frameLocator("iframe[data-neutron-id='1']");
 	await expect(app.locator("#sync")).toHaveText("persisted");
 	await expect(app.locator("body")).toHaveAttribute("data-network", "through-wisp");
+	// WASM codecs load from the runtime base, not the site root.
+	await expect(app.locator("body")).toHaveAttribute("data-brotli", "brotli round trip");
 	await expect(app.locator("body")).toHaveCSS("color", "rgb(1, 2, 3)");
 	expect(await page.locator("iframe[data-neutron-id='1']").getAttribute("src")).toMatch(
 		new RegExp(`^${BASE}__scramjet__/`),

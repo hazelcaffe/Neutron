@@ -242,7 +242,9 @@ export async function buildAssets(out = defaultAssetsDir) {
 							build.onLoad(
 								{ filter: /.*/, namespace: "wasm-binding" },
 								async ({ path }) => ({
-									contents: `const __dirname = "/vendor/brotli";\n${await readFile(path, "utf8")}`,
+									// The binding reads its .wasm from __dirname (see wasm-host.ts),
+									// which follows the runtime base, e.g. /Neutron/ on Pages.
+									contents: `const __dirname = require(${JSON.stringify(resolve(root, "src/shared/base.ts"))}).runtimePath("vendor/brotli");\n${await readFile(path, "utf8")}`,
 									resolveDir: dirname(path),
 								}),
 							);
