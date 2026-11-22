@@ -38,6 +38,8 @@ Apps can also receive an HTTP callback in their main process by binding a virtua
 
 Packaged BrowserWindow renderers and their preloads see an Electron-style user agent with the application name/version, virtual OS and Chromium version. App, session, WebContents and navigation overrides are supported. `node:url` file conversions honor the virtual cwd and platform, including Windows drive and UNC paths.
 
+In proxied pages, `Error.stack` names scripts by their original URLs and Web Storage property access behaves as in Chromium (a missing key reads as `undefined`). A session's `webRequest.onHeadersReceived` listener also sees the renderer's documents and subresources. `app.relaunch()` starts the app again after it exits on its own; **Stop** ends it. `shell.openPath()` on a folder opens it in **Files**.
+
 ### What to import
 
 Choose the installed app's `resources` directory, including its sibling files:
