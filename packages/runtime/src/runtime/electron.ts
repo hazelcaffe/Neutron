@@ -59,37 +59,90 @@ interface Bounds {
 interface MenuTemplate {
 	id?: string;
 	label?: string;
+	sublabel?: string;
+	toolTip?: string;
 	role?: string;
 	type?: string;
 	enabled?: boolean;
 	visible?: boolean;
 	checked?: boolean;
 	accelerator?: string;
-	submenu?: MenuTemplate[];
-	click?: (item: MenuItem) => void;
+	registerAccelerator?: boolean;
+	submenu?: MenuTemplate[] | MenuModel;
+	click?: (item: MenuItem, window: unknown, event: unknown) => void;
 }
+/** Electron's Menu instance shape; the runtime's Menu class extends it. */
+class MenuModel {
+	items: MenuItem[] = [];
+	append(item: MenuItem): void {
+		this.items.push(item);
+		item.menu = this;
+	}
+	insert(position: number, item: MenuItem): void {
+		this.items.splice(position, 0, item);
+		item.menu = this;
+	}
+	getMenuItemById(id: string): MenuItem | null {
+		const find = (items: MenuItem[]): MenuItem | undefined => {
+			for (const item of items) {
+				if (item.id === id) return item;
+				const nested = find(item.submenu?.items || []);
+				if (nested) return nested;
+			}
+		};
+		return find(this.items) || null;
+	}
+}
+let nextMenuCommand = 0;
 class MenuItem {
+	/** Set by the runtime: builds its Menu class and performs built-in roles. */
+	static createMenu = (template: MenuTemplate[]): MenuModel => {
+		const menu = new MenuModel();
+		for (const item of template) menu.append(new MenuItem(item));
+		return menu;
+	};
+	static executeRole?: (role: string, window: unknown, contents: unknown) => boolean;
 	id: string;
 	label: string;
+	sublabel: string;
+	toolTip: string;
 	role?: string;
 	type: string;
 	enabled: boolean;
 	visible: boolean;
 	checked: boolean;
 	accelerator?: string;
-	submenu?: MenuItem[];
-	click?: (item: MenuItem) => void;
+	registerAccelerator: boolean;
+	readonly commandId = ++nextMenuCommand;
+	submenu?: MenuModel;
+	menu?: MenuModel;
+	/** Electron calls the template's handler as click(menuItem, window, event). */
+	click: (event?: unknown, window?: unknown, contents?: unknown) => void;
 	constructor(options: MenuTemplate = {}) {
 		this.id = options.id || crypto.randomUUID();
 		this.label = options.label || options.role || "";
+		this.sublabel = options.sublabel || "";
+		this.toolTip = options.toolTip || "";
 		this.role = options.role;
-		this.type = options.type || "normal";
+		this.submenu = Array.isArray(options.submenu)
+			? MenuItem.createMenu(options.submenu)
+			: options.submenu;
+		this.type = options.type || (this.submenu ? "submenu" : "normal");
 		this.enabled = options.enabled !== false;
 		this.visible = options.visible !== false;
 		this.checked = options.checked || false;
 		this.accelerator = options.accelerator;
-		this.click = options.click;
-		this.submenu = options.submenu?.map((item) => new MenuItem(item));
+		this.registerAccelerator = options.registerAccelerator !== false;
+		const handler = options.click;
+		this.click = (event = {}, window, contents) => {
+			if (this.type === "checkbox") this.checked = !this.checked;
+			else if (this.type === "radio") {
+				for (const sibling of this.menu?.items || [])
+					if (sibling.type === "radio") sibling.checked = sibling === this;
+			}
+			if (this.role && MenuItem.executeRole?.(this.role, window, contents)) return;
+			handler?.(this, window, event);
+		};
 	}
 	serialize(): object {
 		return {
@@ -101,7 +154,7 @@ class MenuItem {
 			visible: this.visible,
 			checked: this.checked,
 			accelerator: this.accelerator,
-			submenu: this.submenu?.map((item) => item.serialize()),
+			submenu: this.submenu?.items.map((item) => item.serialize()),
 		};
 	}
 }
@@ -120,7 +173,6 @@ class WebContents extends EventEmitter {
 		send(channel: string, ...args: unknown[]): void;
 		executeJavaScript(code: string): Promise<unknown>;
 	};
-	zoomLevel = 0;
 	isSecured = false;
 	hostWebContents = null;
 	private openHandler?: (details: { url: string }) => {
@@ -289,6 +341,18 @@ class WebContents extends EventEmitter {
 	getZoomLevel(): number {
 		return Math.log(this.zoom) / Math.log(1.2);
 	}
+	get zoomFactor(): number {
+		return this.getZoomFactor();
+	}
+	set zoomFactor(value: number) {
+		this.setZoomFactor(value);
+	}
+	get zoomLevel(): number {
+		return this.getZoomLevel();
+	}
+	set zoomLevel(value: number) {
+		this.setZoomLevel(value);
+	}
 	focus(): void {
 		this.command("focus");
 	}
@@ -365,7 +429,9 @@ export function createElectron(hooks: Hooks) {
 	let nextWindow = 0;
 	let focused: number | undefined;
 	let ready = false;
-	const linkSchemes = new Set<string>();
+	// Registered link schemes and, on Windows, the extra launcher arguments
+	// the OS passes before the URL (setAsDefaultProtocolClient's `args`).
+	const linkSchemes = new Map<string, string[]>();
 	let singleInstance = false;
 	let quitting = false;
 	let exiting = false;
@@ -499,10 +565,10 @@ export function createElectron(hooks: Hooks) {
 			singleInstance = false;
 		},
 		hasSingleInstanceLock: () => singleInstance,
-		setAsDefaultProtocolClient: (value: string) => {
+		setAsDefaultProtocolClient: (value: string, _path?: string, args?: string[]) => {
 			const scheme = appLinkScheme(value);
 			if (!scheme) return false;
-			linkSchemes.add(scheme);
+			linkSchemes.set(scheme, Array.isArray(args) ? args.map(String) : []);
 			return true;
 		},
 		removeAsDefaultProtocolClient: (value: string) =>
@@ -961,11 +1027,11 @@ export function createElectron(hooks: Hooks) {
 		for (const target of ipcTargets(sender)) target.emit(channel, event, ...args);
 	};
 	let applicationMenu: Menu | null = null;
-	class Menu {
-		items: MenuItem[] = [];
+	class Menu extends MenuModel {
 		static buildFromTemplate(template: MenuTemplate[]): Menu {
 			const menu = new Menu();
-			menu.items = template.map((item) => new MenuItem(item));
+			for (const item of template)
+				menu.append(item instanceof MenuItem ? item : new MenuItem(item));
 			return menu;
 		}
 		static setApplicationMenu(menu: Menu | null): void {
@@ -976,22 +1042,6 @@ export function createElectron(hooks: Hooks) {
 		static getApplicationMenu(): Menu | null {
 			return applicationMenu;
 		}
-		append(item: MenuItem): void {
-			this.items.push(item);
-		}
-		insert(position: number, item: MenuItem): void {
-			this.items.splice(position, 0, item);
-		}
-		getMenuItemById(id: string): MenuItem | null {
-			const find = (items: MenuItem[]): MenuItem | undefined => {
-				for (const item of items) {
-					if (item.id === id) return item;
-					const nested = find(item.submenu || []);
-					if (nested) return nested;
-				}
-			};
-			return find(this.items) || null;
-		}
 		popup(): void {
 			Menu.setApplicationMenu(this);
 		}
@@ -999,6 +1049,17 @@ export function createElectron(hooks: Hooks) {
 			hooks.send({ type: "menu-close" });
 		}
 	}
+	MenuItem.createMenu = (template) => Menu.buildFromTemplate(template);
+	MenuItem.executeRole = (role, target) => {
+		const window = target instanceof BrowserWindow ? target : BrowserWindow.getFocusedWindow();
+		if (role === "quit") app.quit();
+		else if (role === "close") window?.close();
+		else if (role === "reload") window?.reload();
+		else if (role === "toggleDevTools" || role === "toggledevtools")
+			window?.webContents.openDevTools();
+		else return false;
+		return true;
+	};
 	const dialogOptions = (args: unknown[]): unknown =>
 		args.find((arg) => arg && typeof arg === "object" && !(arg instanceof BrowserWindow)) || {};
 	const dialog = {
@@ -1450,13 +1511,8 @@ export function createElectron(hooks: Hooks) {
 			const menu = window?.menu === undefined ? applicationMenu : window.menu;
 			const item = menu?.getMenuItemById(String(message.id));
 			if (!item?.enabled) return;
-			if (item.type === "checkbox") item.checked = !item.checked;
-			if (item.click) item.click(item);
-			else if (item.role === "quit") app.quit();
-			else if (item.role === "close") BrowserWindow.getFocusedWindow()?.close();
-			else if (item.role === "reload") BrowserWindow.getFocusedWindow()?.reload();
-			else if (item.role === "toggleDevTools")
-				BrowserWindow.getFocusedWindow()?.webContents.openDevTools();
+			const target = window ?? BrowserWindow.getFocusedWindow() ?? undefined;
+			item.click({ preventDefault() {} }, target, target?.webContents);
 			if (window?.menu !== undefined) window.setMenu(window.menu);
 			else
 				hooks.send({
@@ -1527,13 +1583,26 @@ export function createElectron(hooks: Hooks) {
 		protocolHandler,
 		openLink: (value: string) => {
 			const url = URL.parse(value);
-			if (exiting || !url || !linkSchemes.has(url.protocol.slice(0, -1))) return false;
-			// Neutron has no OS process launcher. Prefer a URL handler if the
-			// guest provides one; otherwise activate its existing single instance.
-			if (app.listenerCount("open-url")) return app.emit("open-url", cancelable(), value);
-			return (
-				singleInstance && app.emit("second-instance", {}, [paths.exe, value], vfs.cwd, {})
-			);
+			const args = url && linkSchemes.get(url.protocol.slice(0, -1));
+			if (exiting || !url || !args) return false;
+			// macOS delivers links to the running app with open-url. Windows and
+			// Linux launch the registered command line, which a single-instance
+			// app receives as second-instance argv: `exe [args...] url` on Windows
+			// (the args given to setAsDefaultProtocolClient) and `exe url` on Linux.
+			const platform = config.platform ?? "linux";
+			if (platform === "darwin" && app.listenerCount("open-url"))
+				return app.emit("open-url", cancelable(), value);
+			if (singleInstance)
+				return app.emit(
+					"second-instance",
+					cancelable(),
+					[paths.exe, ...(platform === "win32" ? args : []), value],
+					vfs.cwd,
+					{},
+				);
+			// Neutron cannot start a second process for an app without the lock;
+			// a URL handler is the only remaining way to deliver the link.
+			return app.listenerCount("open-url") > 0 && app.emit("open-url", cancelable(), value);
 		},
 		markReady,
 	};
