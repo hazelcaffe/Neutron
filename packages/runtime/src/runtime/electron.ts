@@ -491,6 +491,15 @@ export function createElectron(hooks: Hooks) {
 			}
 		},
 		exit,
+		// Like Electron, this only schedules a new instance for when this one
+		// exits. There is no other executable to launch: an `execPath` option
+		// starts the same app again.
+		relaunch: (options: { args?: unknown[]; execPath?: string } = {}) => {
+			hooks.send({
+				type: "relaunch",
+				args: (options.args ?? config.argv ?? []).map(String),
+			});
+		},
 		requestSingleInstanceLock: () => {
 			singleInstance = true;
 			return true;

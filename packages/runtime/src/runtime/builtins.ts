@@ -115,7 +115,7 @@ export function makeProcess(
 			// Packaged Electron does not pass the main script as a document to open.
 			argv:
 				type === "browser"
-					? ["/neutron/electron"]
+					? ["/neutron/electron", ...(config.argv ?? [])]
 					: ["/neutron/electron", applicationEntry(config.app)],
 			argv0: "/neutron/electron",
 			contextId: `${type === "browser" ? 1 : 2}-${globalThis.crypto.randomUUID()}`,

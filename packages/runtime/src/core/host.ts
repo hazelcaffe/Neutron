@@ -94,6 +94,8 @@ export class RuntimeHost {
 	private readonly emptyMenu: MenuData[] = [];
 	private displayedMenu?: MenuData[];
 	private wake?: WakeLockSentinel;
+	/** Arguments for the instance `app.relaunch()` requested when this one exits. */
+	private relaunch?: string[];
 	constructor(
 		private desktop: HTMLElement,
 		private storage: AppStorage,
@@ -211,6 +213,7 @@ export class RuntimeHost {
 		wisp: string,
 		strict = false,
 		platform: "linux" | "win32" | "darwin" = "linux",
+		argv: string[] = [],
 	): Promise<void> {
 		await this.stop();
 		this.events.state("starting");
@@ -286,6 +289,7 @@ export class RuntimeHost {
 					strict,
 					platform,
 					snapshot: this.snapshot,
+					argv,
 				},
 			});
 			this.log(
@@ -299,6 +303,8 @@ export class RuntimeHost {
 		}
 	}
 	stop(): Promise<void> {
+		// Stopping from the host ends the app; a pending relaunch does not apply.
+		this.relaunch = undefined;
 		return this.stopOnce(false);
 	}
 	private stopOnce(appExited: boolean): Promise<void> {
@@ -590,9 +596,16 @@ export class RuntimeHost {
 				this.log("error", "main", String(message.message));
 				this.events.state("failed");
 				break;
-			case "quit":
-				await this.stopOnce(true);
+			case "relaunch":
+				if (!this.stopping) this.relaunch = (message.args as unknown[]).map(String);
 				break;
+			case "quit": {
+				const relaunch = this.relaunch;
+				await this.stopOnce(true);
+				if (relaunch && this.app && this.relaunch === relaunch)
+					await this.start(this.app, this.wisp, this.strict, this.platform, relaunch);
+				break;
+			}
 			case "renderer-event":
 			case "ipc-result":
 				for (const listener of this.windows.get(Number(message.windowId))?.listeners || [])
