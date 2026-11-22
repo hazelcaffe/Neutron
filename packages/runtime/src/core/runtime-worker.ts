@@ -1,10 +1,15 @@
-import { runtimeBase, runtimePath } from "../shared/base";
+import { fileGatePrefix, runtimeBase, runtimePath } from "../shared/base";
 import { type FilePatch, HOST_WORKER_PROTOCOL } from "../shared/types";
 import type { ProxySession } from "./proxy";
 
 type HostRequest =
 	| { type: "proxy-configure"; session: ProxySession }
-	| { type: "persist-files"; id: string; patches: FilePatch[] };
+	| { type: "persist-files"; id: string; patches: FilePatch[]; gate?: FileGate };
+/** Identifies a write announcement: one stream per AppStorage, numbered in order. */
+export interface FileGate {
+	stream: string;
+	seq: number;
+}
 let verified: ServiceWorker | undefined;
 const changed = "The runtime service worker changed. Reload Neutron before launching again.";
 
@@ -54,8 +59,29 @@ function post(
 		} catch (error) {
 			channel.port2.close();
 			finish(error instanceof Error ? error : new Error(String(error)));
+			return;
 		}
+		if (message.type === "persist-files" && message.gate) gateFiles(message.id, message.gate);
 	});
+}
+
+/**
+ * A message to the service worker travels through the browser process, so a
+ * renderer's request for the file just written can reach the worker first and
+ * read the old contents. A synchronous request returns only once the worker
+ * holds reads of the app's files until this announcement arrives, so every
+ * later request, from any document or worker, sees the write.
+ */
+function gateFiles(id: string, gate: FileGate): void {
+	try {
+		const xhr = new XMLHttpRequest();
+		xhr.open("GET", `${fileGatePrefix()}${id}/${gate.stream}/${gate.seq}`, false);
+		xhr.send();
+		if (xhr.status !== 204) throw new Error(`HTTP ${xhr.status}`);
+	} catch (error) {
+		// Reads then may not wait for this write, as before gates existed.
+		console.warn(`Could not order file reads after a write: ${String(error)}`);
+	}
 }
 
 export async function requestRuntimeWorker(message: HostRequest): Promise<void> {

@@ -131,7 +131,7 @@ export interface BrowserTabs {
 }
 export const APP_ROOT = "/app";
 // Bump when the shell and service worker can no longer use the same RPC contract.
-export const HOST_WORKER_PROTOCOL = 2;
+export const HOST_WORKER_PROTOCOL = 3;
 export function errorText(error: unknown): string {
 	return error instanceof Error ? error.stack || error.message : String(error);
 }

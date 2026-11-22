@@ -43,3 +43,5 @@ export const filePrefix = () => runtimePath("__neutron__/");
 export const protocolPrefix = () => runtimePath("__neutron_protocol__/");
 export const syncPrefix = () => runtimePath("__neutron_sync__/");
 export const barrierPrefix = () => runtimePath("__neutron_barrier__/");
+/** `<app id>/<stream>/<seq>`: holds reads of an app's files until that write announcement arrives. */
+export const fileGatePrefix = () => runtimePath("__neutron_file_gate__/");

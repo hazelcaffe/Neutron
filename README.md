@@ -86,7 +86,7 @@ pnpm preview
 
 The output in `dist/` is statically deployable. Use HTTPS or localhost and serve it at the origin root. Serve `/sw.js` as JavaScript and WASM files as `application/wasm`; do not rewrite missing runtime/vendor assets to `index.html`.
 
-On startup, Neutron waits for the updated service worker to control the page and acknowledge its runtime protocol before enabling Run. Pending file writes are acknowledged by that same worker. If the controller changes during a write, Neutron surfaces the error instead of replaying the mutation.
+On startup, Neutron waits for the updated service worker to control the page and acknowledge its runtime protocol before enabling Run. Pending file writes are acknowledged by that same worker. If the controller changes during a write, Neutron surfaces the error instead of replaying the mutation. Pages announce writes to the service worker by message, which a request can overtake. So after each announcement the page makes a small synchronous request that has the worker hold reads of that app's files until the announcement arrives. A file read issued after a write, from a renderer, a worker or a navigation, never sees the old contents.
 
 For synchronous renderer IPC, serve these headers:
 

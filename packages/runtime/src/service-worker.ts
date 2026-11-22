@@ -5,6 +5,7 @@ import { AppStorage } from "./core/storage";
 import {
 	barrierPrefix,
 	baseFromScript,
+	fileGatePrefix,
 	filePrefix,
 	protocolPrefix,
 	runtimeBase,
@@ -90,6 +91,50 @@ function persistFiles(id: string, patches: FilePatch[]): Promise<void> {
 		if (fileWrites.get(id) === next) fileWrites.delete(id);
 	});
 }
+
+// Write announcements arrive by message; a read can overtake one. The shell
+// registers a gate synchronously after each announcement (gateFiles in
+// core/runtime-worker.ts), and reads of that app wait until it arrives.
+const UUID = /^[\da-f-]{36}$/i;
+/** Highest announcement received, by stream (one per shell page). */
+const announced = new Map<string, number>();
+const awaitingAnnouncement = new Map<string, { seq: number; arrived(): void }[]>();
+/** By app id: reads wait for these announcements. */
+const fileGates = new Map<string, Promise<void>>();
+function announce(gate: unknown): void {
+	const { stream, seq } = (gate ?? {}) as { stream?: unknown; seq?: unknown };
+	if (typeof stream !== "string" || typeof seq !== "number") return;
+	announced.set(stream, Math.max(seq, announced.get(stream) ?? 0));
+	const waiting = awaitingAnnouncement.get(stream) ?? [];
+	for (const waiter of waiting.filter((item) => item.seq <= seq)) waiter.arrived();
+}
+function gateFiles(id: string, stream: string, seq: number): void {
+	if ((announced.get(stream) ?? 0) >= seq) return;
+	const arrived = new Promise<void>((resolve) => {
+		const waiter = {
+			seq,
+			arrived: () => {
+				clearTimeout(timer);
+				const waiting = awaitingAnnouncement.get(stream)?.filter((item) => item !== waiter);
+				if (waiting?.length) awaitingAnnouncement.set(stream, waiting);
+				else awaitingAnnouncement.delete(stream);
+				resolve();
+			},
+		};
+		// The announcement was posted before its gate; this only bounds a lost one
+		// (the shell's page closing mid-post), after which reads proceed as before.
+		const timer = setTimeout(() => {
+			console.warn(`File write announcement ${stream}/${seq} did not arrive`);
+			waiter.arrived();
+		}, 10_000);
+		awaitingAnnouncement.set(stream, [...(awaitingAnnouncement.get(stream) ?? []), waiter]);
+	});
+	const gate = Promise.all([fileGates.get(id), arrived]).then(() => {});
+	fileGates.set(id, gate);
+	void gate.then(() => {
+		if (fileGates.get(id) === gate) fileGates.delete(id);
+	});
+}
 self.addEventListener("message", (event) => {
 	const type = event.data?.type;
 	if (type === "runtime-handshake" || type === "persist-files" || type === "proxy-configure") {
@@ -113,8 +158,9 @@ self.addEventListener("message", (event) => {
 		const { id, patches } = event.data;
 		if (
 			type === "persist-files" &&
-			(typeof id !== "string" || !/^[\da-f-]{36}$/i.test(id) || !Array.isArray(patches))
+			(typeof id !== "string" || !UUID.test(id) || !Array.isArray(patches))
 		) {
+			announce(event.data.gate);
 			port.postMessage({ error: "Invalid storage request" });
 			port.close();
 			return;
@@ -123,6 +169,8 @@ self.addEventListener("message", (event) => {
 			type === "persist-files"
 				? persistFiles(id, patches)
 				: configureProxy(event.data.session, event.source.id);
+		// After persistFiles registered the write, which reads then wait for.
+		if (type === "persist-files") announce(event.data.gate);
 		event.waitUntil(
 			work
 				.then(
@@ -151,6 +199,7 @@ async function appFile(request: Request): Promise<Response> {
 		const id = parts.shift();
 		if (!id || parts.some((part) => part === ".." || part === "." || /[\\/\0]/.test(part)))
 			return new Response("Invalid virtual path", { status: 400 });
+		await fileGates.get(id);
 		const pending = fileWrites.get(id);
 		if (pending) {
 			try {
@@ -332,6 +381,16 @@ setVirtualResponses(async (session, target, request, callback) => {
 self.addEventListener("fetch", (event) => {
 	const url = new URL(event.request.url);
 	if (url.origin !== self.location.origin) return;
+	if (url.pathname.startsWith(fileGatePrefix())) {
+		const [id = "", stream = "", seq = ""] = url.pathname
+			.slice(fileGatePrefix().length)
+			.split("/");
+		const valid = UUID.test(id) && UUID.test(stream) && /^\d{1,15}$/.test(seq);
+		// Registered before responding: the shell's request blocks until then.
+		if (valid) gateFiles(id, stream, Number(seq));
+		event.respondWith(new Response(null, { status: valid ? 204 : 400 }));
+		return;
+	}
 	if (url.pathname.startsWith(barrierPrefix())) {
 		const token = url.pathname.slice(barrierPrefix().length);
 		event.respondWith(

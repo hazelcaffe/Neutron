@@ -1,5 +1,5 @@
 import type { FilePatch, InstalledApp, RuntimeSettings, Snapshot } from "../shared/types";
-import { requestRuntimeWorker } from "./runtime-worker";
+import { type FileGate, requestRuntimeWorker } from "./runtime-worker";
 
 type Directory = FileSystemDirectoryHandle & {
 	entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
@@ -19,11 +19,12 @@ function forServiceWorker(patch: FilePatch): FilePatch {
 		return { path: patch.path, entry: { ...entry, archive: new Uint8Array(entry.archive) } };
 	return patch;
 }
-async function sendPatches(id: string, patches: FilePatch[]): Promise<void> {
+async function sendPatches(id: string, patches: FilePatch[], gate: FileGate): Promise<void> {
 	return requestRuntimeWorker({
 		type: "persist-files",
 		id,
 		patches: patches.map(forServiceWorker),
+		gate,
 	});
 }
 // OPFS has no utimes operation. Keep app-assigned mtimes separately; for
@@ -88,6 +89,9 @@ export class AppStorage {
 	private root!: FileSystemDirectoryHandle;
 	private pending: Promise<void> = Promise.resolve();
 	private failure: unknown;
+	/** Numbers this page's write announcements (see gateFiles in runtime-worker.ts). */
+	private readonly stream = crypto.randomUUID();
+	private sequence = 0;
 	async init(): Promise<void> {
 		if (!navigator.storage?.getDirectory)
 			throw new Error(
@@ -274,7 +278,7 @@ export class AppStorage {
 		// Announce mutations immediately, before a renderer can ask the service
 		// worker to serve the same path. Sending inside this.pending.then(...)
 		// would hide queued mutations from subsequent browser resource loads.
-		const persisted = sendPatches(id, patches);
+		const persisted = sendPatches(id, patches, { stream: this.stream, seq: ++this.sequence });
 		this.pending = Promise.all([
 			this.pending,
 			persisted.catch((error: unknown) => {
