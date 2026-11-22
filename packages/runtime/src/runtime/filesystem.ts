@@ -7,6 +7,20 @@ import type { FilePatch, Snapshot } from "../shared/types";
 const MUTATIONS =
 	/^(write|append|mkdir|mkdtemp|unlink|rmdir|rm|rename|copyFile|cp|truncate|ftruncate|symlink|link|chmod|chown|utimes|fchmod|fchown|futimes)/;
 
+// Directories owned by root in a root-owned parent (/tmp also has the sticky
+// bit). The unprivileged guest user can use them but cannot remove or rename
+// them; e.g. "rmdir(dirname(tempFile))" must fail as it does on a real system.
+const SYSTEM_DIRECTORIES = new Set(["/", "/tmp", "/home", "/etc", "/neutron"]);
+const REMOVALS = /^(rmdir|rm|rename|unlink)(Sync)?$/;
+function systemDirectoryError(syscall: string, target: string) {
+	return Object.assign(new Error(`EPERM: operation not permitted, ${syscall} '${target}'`), {
+		errno: -1,
+		code: "EPERM",
+		syscall,
+		path: target,
+	});
+}
+
 // memfs uses close() to release its descriptor on finish/destroy. Node's
 // *public* close() must first end the writable side and drain queued writes.
 function drainingClose(release: WriteStream["close"]) {
@@ -162,6 +176,23 @@ export class VirtualFileSystem {
 								typeof args[1] === "string"
 							)
 								args[1] = this.normalizePath(args[1]);
+						}
+						if (
+							!fileHandle &&
+							REMOVALS.test(String(key)) &&
+							typeof args[0] === "string" &&
+							SYSTEM_DIRECTORIES.has(path.resolve("/", args[0]))
+						) {
+							const error = systemDirectoryError(
+								String(key).replace(/Sync$/, ""),
+								args[0],
+							);
+							if (promises) return Promise.reject(error);
+							if (String(key).endsWith("Sync")) throw error;
+							const callback = args.at(-1);
+							if (typeof callback === "function")
+								queueMicrotask(() => callback(error));
+							return;
 						}
 						if (
 							["readFile", "readFileSync"].includes(String(key)) &&
