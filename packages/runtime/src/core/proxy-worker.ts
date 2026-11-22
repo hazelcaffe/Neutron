@@ -1,4 +1,5 @@
 import { proxyTransport } from "../runtime/proxy-transport";
+import { runtimePath, scramjetPrefix } from "../shared/base";
 import { isLoopbackHTTP } from "../shared/loopback";
 import {
 	type FetchHandler,
@@ -15,10 +16,12 @@ const configurations = "neutron-scramjet-v2";
 const running = new Map<string, Promise<{ handler: FetchHandler; browser: boolean }>>();
 const jars = new Map<string, ReturnType<typeof proxyContext>["cookieJar"]>();
 const configURL = (id: string) =>
-	new URL(`/__neutron_proxy_config__/${id}`, self.location.origin).href;
+	new URL(runtimePath(`__neutron_proxy_config__/${id}`), self.location.origin).href;
 const cookieURL = (session: ProxySession) =>
 	new URL(
-		`/__neutron_proxy_cookies__/${session.appId}${session.browser ? "/external-browser" : !session.partition || session.partition === "default" ? "" : `/${encodeURIComponent(session.partition.startsWith("persist:") ? session.partition : session.id)}`}`,
+		runtimePath(
+			`__neutron_proxy_cookies__/${session.appId}${session.browser ? "/external-browser" : !session.partition || session.partition === "default" ? "" : `/${encodeURIComponent(session.partition.startsWith("persist:") ? session.partition : session.id)}`}`,
+		),
 		self.location.origin,
 	).href;
 export async function configureProxy(session: ProxySession, owner: string): Promise<void> {
@@ -54,7 +57,9 @@ export async function proxyFetch(
 	) => Promise<Response | undefined>,
 ): Promise<Response> {
 	const api = Reflect.get(globalThis, "$scramjet") as ScramjetAPI;
-	const id = new URL(event.request.url).pathname.split("/")[2];
+	const id = new URL(event.request.url).pathname
+		.slice(runtimePath("__scramjet__/").length)
+		.split("/")[0];
 	if (!id) return new Response("Missing app proxy session", { status: 400 });
 	let pending = running.get(id);
 	if (!pending) {
@@ -144,7 +149,7 @@ export async function proxyFetch(
 			handler.trackedClients.set(clientId, { clientId, history: [] });
 		const client = event.clientId ? await self.clients.get(event.clientId) : undefined;
 		const request = event.request;
-		const prefix = `${self.location.origin}/__scramjet__/${id}/`;
+		const prefix = `${self.location.origin}${scramjetPrefix(id)}`;
 		const result = await handler.handleFetch({
 			// Authorization is per fetch, never captured from the first event that
 			// built this cached handler. First iframe commits have no source client.

@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig(({ isPreview }) => ({
+	// GitHub Pages serves this project at /Neutron/; see .github/workflows/pages.yml.
+	base: process.env.NEUTRON_BASE || "/",
 	plugins: [react(), neutron({ reloadOnChange: process.env.NEUTRON_HMR === "1" })],
 	server: {
 		// A page reload terminates the guest app, including unsaved work and

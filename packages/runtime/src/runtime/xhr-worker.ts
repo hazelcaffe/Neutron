@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import "../shared/worker-base";
 
 interface SyncRequest {
 	url: string;

@@ -2,12 +2,22 @@
 import { browserLoopback } from "./core/loopback-fetch";
 import { configureProxy, proxyCookies, proxyFetch } from "./core/proxy-worker";
 import { AppStorage } from "./core/storage";
+import {
+	baseFromScript,
+	filePrefix,
+	protocolPrefix,
+	runtimeBase,
+	runtimePath,
+	syncPrefix,
+} from "./shared/base";
 import { installScramjetFixes } from "./shared/scramjet-debugger";
 import { parse, type SyncRequest, type SyncResult, stringify } from "./shared/sync";
-import { FILE_PREFIX, type FilePatch, HOST_WORKER_PROTOCOL, PROTOCOL_PREFIX } from "./shared/types";
+import { type FilePatch, HOST_WORKER_PROTOCOL } from "./shared/types";
 import { parseProtocolURL } from "./shared/urls";
 
 declare const self: ServiceWorkerGlobalScope;
+// This worker is served at <base>sw.js with scope <base>.
+baseFromScript(self.location.href, 0);
 // Scramjet v2 snapshots the Blob URL APIs in every realm. Service workers do
 // not expose them, so keep worker-created rewriter blobs in this worker.
 const workerBlobs = new Map<string, Blob>();
@@ -23,7 +33,7 @@ if (!URL.createObjectURL) {
 	};
 }
 installScramjetFixes(globalThis);
-importScripts("/vendor/scramjet/scramjet_bundled.js");
+importScripts(runtimePath("vendor/scramjet/scramjet_bundled.js"));
 const MIME: Record<string, string> = {
 	html: "text/html",
 	htm: "text/html",
@@ -127,7 +137,7 @@ self.addEventListener("message", (event) => {
 async function appFile(request: Request): Promise<Response> {
 	try {
 		const url = new URL(request.url);
-		const parts = url.pathname.slice(FILE_PREFIX.length).split("/").map(decodeURIComponent);
+		const parts = url.pathname.slice(filePrefix().length).split("/").map(decodeURIComponent);
 		const id = parts.shift();
 		if (!id || parts.some((part) => part === ".." || part === "." || /[\\/\0]/.test(part)))
 			return new Response("Invalid virtual path", { status: 400 });
@@ -249,7 +259,7 @@ async function protocolResponse(
 self.addEventListener("fetch", (event) => {
 	const url = new URL(event.request.url);
 	if (url.origin !== self.location.origin) return;
-	if (url.pathname.startsWith("/__scramjet__/")) {
+	if (url.pathname.startsWith(runtimePath("__scramjet__/"))) {
 		event.respondWith(
 			proxyFetch(event, async (session, target, request, callback) => {
 				if (session.browser) {
@@ -284,7 +294,7 @@ self.addEventListener("fetch", (event) => {
 				if (target.protocol === "file:")
 					return appFile(
 						new Request(
-							`${self.location.origin}${FILE_PREFIX}${session.appId}${target.pathname}${target.search}`,
+							`${self.location.origin}${filePrefix()}${session.appId}${target.pathname}${target.search}`,
 							{ method: request.method, headers: request.headers },
 						),
 					);
@@ -298,11 +308,11 @@ self.addEventListener("fetch", (event) => {
 		);
 		return;
 	}
-	if (url.pathname.startsWith(FILE_PREFIX)) {
+	if (url.pathname.startsWith(filePrefix())) {
 		event.respondWith(appFile(event.request));
 		return;
 	}
-	if (url.pathname.startsWith(PROTOCOL_PREFIX)) {
+	if (url.pathname.startsWith(protocolPrefix())) {
 		const parsed = parseProtocolURL(url);
 		event.respondWith(
 			protocolResponse(parsed.instanceId, parsed.url, event.request).catch(
@@ -311,10 +321,10 @@ self.addEventListener("fetch", (event) => {
 		);
 		return;
 	}
-	if (url.pathname.startsWith("/__neutron_sync__/"))
+	if (url.pathname.startsWith(syncPrefix()))
 		event.respondWith(
 			(async () => {
-				const [, , instanceId, target] = url.pathname.split("/");
+				const [instanceId, target] = url.pathname.slice(syncPrefix().length).split("/");
 				if (!instanceId || !["main", "host"].includes(target || ""))
 					return new Response(stringify({ error: "Invalid synchronous bridge target" }), {
 						status: 400,
@@ -351,4 +361,37 @@ self.addEventListener("fetch", (event) => {
 				(error) => new Response(stringify({ error: String(error) }), { status: 500 }),
 			),
 		);
+	else if (
+		url.pathname.startsWith(runtimeBase()) &&
+		// Only documents and worker scripts carry the isolation policy;
+		// same-origin subresources pass through untouched.
+		(event.request.mode === "navigate" ||
+			["worker", "sharedworker"].includes(event.request.destination))
+	)
+		event.respondWith(isolated(event.request));
 });
+
+// Static hosts such as GitHub Pages cannot send cross-origin isolation
+// headers. Add them to this site's own documents and worker scripts.
+async function isolated(request: Request): Promise<Response> {
+	const response = await fetch(request);
+	if (
+		response.type === "opaque" ||
+		response.type === "opaqueredirect" ||
+		response.status < 200 ||
+		response.status > 599 ||
+		(response.headers.has("Cross-Origin-Embedder-Policy") &&
+			response.headers.has("Cross-Origin-Opener-Policy"))
+	)
+		return response;
+	const headers = new Headers(response.headers);
+	if (!headers.has("Cross-Origin-Embedder-Policy"))
+		headers.set("Cross-Origin-Embedder-Policy", "credentialless");
+	if (!headers.has("Cross-Origin-Opener-Policy"))
+		headers.set("Cross-Origin-Opener-Policy", "same-origin");
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
+}

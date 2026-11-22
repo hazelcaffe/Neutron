@@ -1,0 +1,49 @@
+name: Pages
+
+# Deploys the Neutron app to https://hazelcaffe.github.io/Neutron/.
+# GitHub Pages can't send COOP/COEP headers; the runtime's service worker adds
+# them after one reload. Without a local relay, the app uses wss://anura.pro/.
+on:
+    push:
+        branches: [main]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    pages: write
+    id-token: write
+
+concurrency:
+    group: pages
+    cancel-in-progress: false
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 26
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - id: pages
+              uses: actions/configure-pages@v6
+            - run: pnpm build
+              env:
+                  NEUTRON_BASE: ${{ steps.pages.outputs.base_path }}/
+                  VITE_NEUTRON_RELAY: wss://anura.pro/
+            - uses: actions/upload-pages-artifact@v5
+              with:
+                  path: dist
+
+    deploy:
+        needs: build
+        runs-on: ubuntu-latest
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+            - id: deployment
+              uses: actions/deploy-pages@v5

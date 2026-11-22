@@ -1,9 +1,12 @@
 import type { ProxyTransport, RawHeaders } from "@mercuryworkshop/proxy-transports";
 import type { CookieJar, ScramjetClient, ScramjetContext } from "@mercuryworkshop/scramjet";
 import type { ProxySession } from "../core/proxy";
+import { runtimeBase, runtimePath, scramjetPrefix } from "./base";
 
 export type ProxyBootstrap = ProxySession & {
 	hostOrigin: string;
+	/** The runtime base path in the embedding origin (see shared/base.ts). */
+	hostBase: string;
 	url: string;
 	cookies: string;
 	headers: RawHeaders;
@@ -45,7 +48,7 @@ export function proxyContext(
 	const context: ScramjetContext = {
 		config: {
 			...api.defaultConfig,
-			maskedfiles: ["/runtime/", "/vendor/"],
+			maskedfiles: [runtimePath("runtime/"), runtimePath("vendor/")],
 			flags: {
 				...api.defaultConfig.flags,
 				captureErrors: false,
@@ -57,7 +60,7 @@ export function proxyContext(
 				encapsulateWorkers: false,
 			},
 		},
-		prefix: new URL(`/__scramjet__/${session.id}/`, origin),
+		prefix: new URL(scramjetPrefix(session.id), origin),
 		cookieJar,
 		interface: {
 			codecEncode: encodeURIComponent,
@@ -66,6 +69,7 @@ export function proxyContext(
 				const config: ProxyBootstrap = {
 					...session,
 					hostOrigin: origin,
+					hostBase: runtimeBase(),
 					url: meta.origin.href,
 					cookies: context.cookieJar.dump(),
 					headers: html.headers || [],
@@ -73,24 +77,27 @@ export function proxyContext(
 				};
 				const source = `globalThis.__neutronProxyBootstrap=${JSON.stringify(config)};`;
 				return [
-					script(`${origin}/vendor/scramjet/scramjet_bundled.js`),
+					script(`${origin}${runtimePath("vendor/scramjet/scramjet_bundled.js")}`),
 					script(
 						`data:application/javascript;base64,${btoa(unescape(encodeURIComponent(source)))}`,
 					),
 					...(session.browser
 						? []
 						: [
-								script(`${origin}/vendor/sqlite/sql-wasm.js`),
-								script(`${origin}/runtime/sqlite-bootstrap.js`),
+								script(`${origin}${runtimePath("vendor/sqlite/sql-wasm.js")}`),
+								script(`${origin}${runtimePath("runtime/sqlite-bootstrap.js")}`),
 							]),
-					script(`${origin}/runtime/proxy-client.js`),
-					...(session.browser ? [] : [script(`${origin}/runtime/renderer.js`)]),
+					script(`${origin}${runtimePath("runtime/proxy-client.js")}`),
+					...(session.browser
+						? []
+						: [script(`${origin}${runtimePath("runtime/renderer.js")}`)]),
 				];
 			},
 			getWorkerInjectScripts(meta, isModule, script) {
 				const config: ProxyBootstrap = {
 					...session,
 					hostOrigin: origin,
+					hostBase: runtimeBase(),
 					url: meta.origin.href,
 					cookies: context.cookieJar.dump(),
 					headers: [],
@@ -99,7 +106,7 @@ export function proxyContext(
 				const setup = `globalThis.__neutronProxyBootstrap=${JSON.stringify(config)};`;
 				// Module imports are hoisted. Put config initialization in its own
 				// imported module so it runs before the client module evaluates.
-				return `${script(`${origin}/vendor/scramjet/scramjet_bundled.js`)}\n${isModule ? script(`data:application/javascript;base64,${btoa(unescape(encodeURIComponent(setup)))}`) : setup}\n${script(`${origin}/runtime/proxy-client.js`)}\n`;
+				return `${script(`${origin}${runtimePath("vendor/scramjet/scramjet_bundled.js")}`)}\n${isModule ? script(`data:application/javascript;base64,${btoa(unescape(encodeURIComponent(setup)))}`) : setup}\n${script(`${origin}${runtimePath("runtime/proxy-client.js")}`)}\n`;
 			},
 		},
 	};

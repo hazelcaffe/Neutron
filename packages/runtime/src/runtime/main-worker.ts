@@ -1,3 +1,4 @@
+import "../shared/worker-base";
 import { Buffer } from "buffer";
 import { LOOPBACK_PROBE, rejectProbe } from "../shared/loopback";
 import { type SyncResult, stringify } from "../shared/sync";

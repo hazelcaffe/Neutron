@@ -50,6 +50,7 @@ export function SettingsDialog(props: {
 	opened: boolean;
 	settings: RuntimeSettings;
 	localRelay: string;
+	publicRelay: string;
 	app?: InstalledApp;
 	onClose(): void;
 	onSave(settings: RuntimeSettings): void;
@@ -81,11 +82,11 @@ export function SettingsDialog(props: {
 					<TextInput
 						id="wisp-url"
 						label="Wisp relay URL"
-						placeholder={props.localRelay ? "Built-in relay" : "wss://relay.example/"}
+						placeholder={props.localRelay || props.publicRelay}
 						description={
 							props.localRelay
 								? `Leave empty to use the built-in relay at ${props.localRelay}`
-								: "This host has no built-in relay. Without one, apps run offline."
+								: `Leave empty to use the public relay ${props.publicRelay}. A relay carries apps’ network connections; HTTPS stays encrypted end to end.`
 						}
 						value={draft.wisp}
 						error={error}

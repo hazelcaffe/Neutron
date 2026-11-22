@@ -1,5 +1,6 @@
 import { Buffer } from "buffer";
 import path from "path-browserify";
+import { runtimePath } from "../shared/base";
 import type { VirtualFileSystem } from "./filesystem";
 
 /**
@@ -195,10 +196,10 @@ function growableTable(bytes: Uint8Array): Uint8Array {
 
 export function initializeSQLCipher(
 	load: () => Promise<{ factory: Factory; wasm: Uint8Array }> = async () => {
-		const url = "/vendor/wa-sqlite/mc-wa-sqlite.mjs";
+		const url = runtimePath("vendor/wa-sqlite/mc-wa-sqlite.mjs");
 		const [imported, response] = await Promise.all([
 			import(/* @vite-ignore */ url) as Promise<{ default: Factory }>,
-			fetch("/vendor/wa-sqlite/mc-wa-sqlite.wasm"),
+			fetch(runtimePath("vendor/wa-sqlite/mc-wa-sqlite.wasm")),
 		]);
 		if (!response.ok) throw new Error(`SQLCipher WASM unavailable (${response.status})`);
 		return {

@@ -1,15 +1,10 @@
 import { Buffer } from "buffer";
 import { EventEmitter } from "events";
 import path from "path-browserify";
+import { filePrefix } from "../shared/base";
 import { parse, type SyncResult } from "../shared/sync";
 import type { RpcResult } from "../shared/types";
-import {
-	applicationPath,
-	errorText,
-	FILE_PREFIX,
-	type FilePatch,
-	type RuntimeBridge,
-} from "../shared/types";
+import { applicationPath, errorText, type FilePatch, type RuntimeBridge } from "../shared/types";
 import { protocolURL as encodeProtocolURL } from "../shared/urls";
 import { bridgeValue, preloadWindow } from "./bridge-values";
 import { makeBuiltins, makeProcess } from "./builtins";
@@ -223,7 +218,7 @@ function boot(): void {
 		const url = new URL(value);
 		const route =
 			url.protocol === "file:"
-				? `${FILE_PREFIX}${config.app.id}${url.pathname}${url.search}`
+				? `${filePrefix()}${config.app.id}${url.pathname}${url.search}`
 				: encodeProtocolURL(config.instanceId, url);
 		return network.browserFetch(new URL(route, window.top?.location.href), init);
 	};

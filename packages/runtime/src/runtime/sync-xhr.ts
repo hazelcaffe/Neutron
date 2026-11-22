@@ -46,7 +46,7 @@ export function installSyncXHR(
 			};
 			if (host) host.syncXHR(request);
 			else {
-				worker ??= new NativeWorker(`${origin}/runtime/xhr-worker.js`, {
+				worker ??= new NativeWorker(`${origin}${runtimePath("runtime/xhr-worker.js")}`, {
 					name: "neutron-sync-xhr",
 				});
 				Reflect.apply(post, worker, [request]);
@@ -151,4 +151,5 @@ export function installSyncXHR(
 		);
 }
 
+import { runtimePath } from "../shared/base";
 import { embeddingHost } from "./transport";

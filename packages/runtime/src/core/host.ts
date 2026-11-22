@@ -1,5 +1,6 @@
 import path from "path-browserify";
 import { answerRpc, RpcClient } from "../runtime/rpc";
+import { runtimePath, scramjetPrefix } from "../shared/base";
 import { appLinkScheme, browserTarget } from "../shared/browser-links";
 import { LOOPBACK_PROBE, rejectProbe } from "../shared/loopback";
 import type { SyncRequest, SyncResult } from "../shared/sync";
@@ -253,7 +254,7 @@ export class RuntimeHost {
 				);
 			app.entryPoint = entry;
 			await this.proxy.configure(wisp, this.instanceId, app);
-			const worker = new Worker("/runtime/main-worker.js", {
+			const worker = new Worker(runtimePath("runtime/main-worker.js"), {
 				name: `neutron:${app.manifest.name}`,
 			});
 			this.worker = worker;
@@ -774,7 +775,7 @@ export class RuntimeHost {
 		} else this.send({ type: "window-event", windowId: id, event: action });
 	}
 	private browserPrefix(session: ProxySession): URL {
-		return new URL(`/__scramjet__/${session.id}/`, location.origin);
+		return new URL(scramjetPrefix(session.id), location.origin);
 	}
 	private async openBrowser(url: URL, returnTo = this.activeWindow): Promise<void> {
 		if (!this.wisp)

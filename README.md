@@ -30,6 +30,8 @@ The active app fills the viewport without window borders or a host title bar. Wh
 
 Set **Settings → Platform** to match the imported distribution (Linux, Windows, or macOS). This selects process/OS metadata and default path semantics for the next launch. The filesystem remains browser-backed on every platform.
 
+**Hosted version:** https://hazelcaffe.github.io/Neutron/ is deployed from `main` by `.github/workflows/pages.yml`. It's built with `NEUTRON_BASE=/Neutron/`, because Pages serves project sites from a subpath. To deploy elsewhere, run `NEUTRON_BASE=/your/path/ pnpm build` and serve `dist/` as static files. Every runtime path, including the service worker scope, follows the base.
+
 During `pnpm dev`, open **http://localhost:5173/**. Runtime edits rebuild the generated assets; save your work and reload the page yourself to pick them up. Automatic hot reload is opt-in (`NEUTRON_HMR=1 pnpm dev`). Use the same hostname and port to keep the same browser storage.
 
 **Sign-in links:** `shell.openExternal()` opens HTTP(S) URLs in a **Browser** tab inside Neutron, through Scramjet and Wisp. The tab runs web content without the desktop app's preload, Node globals or Electron user agent. A return navigation to a scheme registered with `app.setAsDefaultProtocolClient` is delivered to the running app (`open-url`, or `second-instance` for a single-instance app without a URL listener). Only the destination origin appears in the Browser tab label. This is a virtual browser handoff, not OS-wide protocol registration. Passkeys remain bound to the real browser origin: a localhost-hosted page cannot use a passkey for a vendor domain.
@@ -87,13 +89,13 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: credentialless
 ```
 
-Vite dev/preview set them, and `public/_headers` supplies the equivalent for hosts supporting that convention. Async IPC works without cross-origin isolation. A current Chromium-based browser is the tested target; OPFS, service workers, SharedWorker, and WebAssembly are required for the complete runtime.
+Vite dev/preview set them, and `public/_headers` supplies the equivalent for hosts supporting that convention. On hosts that can't send headers, such as GitHub Pages, the runtime's service worker adds them to the site's documents and worker scripts; the page reloads once after the service worker first takes control. Async IPC works without cross-origin isolation. A current Chromium-based browser is the tested target; OPFS, service workers, SharedWorker, and WebAssembly are required for the complete runtime.
 
 ## Networking
 
 **`pnpm dev` and `pnpm preview` provide a Wisp relay automatically at `/wisp/` on the same server.** The UI discovers it, so no URL configuration is needed. Leave **Settings → Wisp relay URL** blank to use it. An explicitly entered URL overrides the local relay; **Disable external networking** opts out.
 
-For a static production deployment, supply your own `wss://…/wisp/` endpoint in Settings. The dev relay is not included in `dist/`. Its WebSocket upgrades are restricted to the dev origin; it permits local/private destinations for development. It carries connections only—uploaded application code and files still execute/stay in the browser.
+Without a local relay (for example on GitHub Pages), the app uses the public relay **`wss://anura.pro/`**. Builds can choose a different default with `VITE_NEUTRON_RELAY`, and **Settings → Wisp relay URL** overrides it. A public relay sees which hosts and ports apps connect to, and the content of unencrypted connections; HTTPS and other TLS stay encrypted end to end, because TLS runs in the browser. The dev relay is not included in `dist/`. Its WebSocket upgrades are restricted to the dev origin; it permits local/private destinations for development. It carries connections only—uploaded application code and files still execute/stay in the browser.
 
 - HTTP, HTTPS, WebSocket, and TLS connections use **libcurl.js**, with TLS performed in the browser.
 - The network transport and raw outgoing TCP/UDP sockets use **wisp-js**.

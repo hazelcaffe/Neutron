@@ -1,3 +1,4 @@
+import "../shared/worker-base";
 import { Buffer } from "buffer";
 import { EventEmitter } from "events";
 import { PassThrough } from "readable-stream";

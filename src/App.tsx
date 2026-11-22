@@ -43,6 +43,9 @@ const COLORS: Record<State, string> = {
 	unavailable: "red",
 };
 
+/** Used when you haven't set a relay and the server doesn't provide one. */
+export const PUBLIC_RELAY: string = import.meta.env.VITE_NEUTRON_RELAY ?? "wss://anura.pro/";
+
 // One runtime per page; it owns the viewport element for the page's lifetime.
 let runtime: Promise<Neutron> | undefined;
 
@@ -162,7 +165,7 @@ export function App() {
 		try {
 			const { settings, localRelay } = config.current;
 			await neutron.start(app, {
-				relay: settings.offline ? "" : settings.wisp || localRelay,
+				relay: settings.offline ? "" : settings.wisp || localRelay || PUBLIC_RELAY,
 				strict: settings.strict,
 				platform: settings.platform,
 			});
@@ -521,6 +524,7 @@ export function App() {
 				opened={settingsOpen}
 				settings={settings}
 				localRelay={localRelay}
+				publicRelay={PUBLIC_RELAY}
 				app={app}
 				onClose={() => setSettingsOpen(false)}
 				onSave={(next) => void saveSettings(next)}

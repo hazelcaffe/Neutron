@@ -2,6 +2,7 @@ import { Buffer } from "buffer";
 import { EventEmitter } from "events";
 import path from "path-browserify";
 import type { BindParams, Database as SQLDatabase, SqlJsStatic, SqlValue, Statement } from "sql.js";
+import { runtimePath } from "../shared/base";
 import { noteStub } from "./fallback";
 import type { VirtualFileSystem } from "./filesystem";
 
@@ -19,11 +20,11 @@ export function initializeSQLite(factory?: () => Promise<SqlJsStatic>): Promise<
 	initializing ??= (async () => {
 		if (factory) engine = await factory();
 		else {
-			importScripts("/vendor/sqlite/sql-wasm.js");
+			importScripts(runtimePath("vendor/sqlite/sql-wasm.js"));
 			engine = await Reflect.get(
 				globalThis,
 				"initSqlJs",
-			)({ locateFile: () => "/vendor/sqlite/sql-wasm.wasm" });
+			)({ locateFile: () => runtimePath("vendor/sqlite/sql-wasm.wasm") });
 		}
 	})();
 	return initializing;

@@ -1,3 +1,4 @@
+import { runtimeBase, runtimePath } from "../shared/base";
 import { type FilePatch, HOST_WORKER_PROTOCOL } from "../shared/types";
 import type { ProxySession } from "./proxy";
 
@@ -64,8 +65,8 @@ export async function requestRuntimeWorker(message: HostRequest): Promise<void> 
 }
 
 async function selectWorker(): Promise<ServiceWorker> {
-	const registration = await navigator.serviceWorker.register("/sw.js", {
-		scope: "/",
+	const registration = await navigator.serviceWorker.register(runtimePath("sw.js"), {
+		scope: runtimeBase(),
 		updateViaCache: "none",
 	});
 	// register() (and ready) can return yesterday's active worker before the

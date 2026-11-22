@@ -1,3 +1,4 @@
+import { runtimePath, scramjetPrefix } from "../shared/base";
 import type { InstalledApp } from "../shared/types";
 import { requestRuntimeWorker } from "./runtime-worker";
 
@@ -29,7 +30,7 @@ export class PageProxy {
 			!this.session ||
 			url.origin !== location.origin ||
 			![...this.partitions.values(), ...(this.browser ? [this.browser] : [])].some((entry) =>
-				url.pathname.startsWith(`/__scramjet__/${entry.session.id}/`),
+				url.pathname.startsWith(scramjetPrefix(entry.session.id)),
 			)
 		)
 			throw new Error("Invalid or expired sync XHR session");
@@ -71,7 +72,9 @@ export class PageProxy {
 		this.session = { id: instanceId, appId: app.id, wisp };
 		await this.ready("default");
 		if (crossOriginIsolated) {
-			const worker = new Worker("/runtime/xhr-worker.js", { name: "neutron-sync-xhr" });
+			const worker = new Worker(runtimePath("runtime/xhr-worker.js"), {
+				name: "neutron-sync-xhr",
+			});
 			this.xhr = worker;
 			await new Promise<void>((resolve, reject) => {
 				const finish = (error?: Error) => {
@@ -124,5 +127,5 @@ export function encodeProxyURL(session: ProxySession, value: string): string {
 	const target = new URL(value),
 		hash = target.hash;
 	target.hash = "";
-	return `/__scramjet__/${session.id}/${encodeURIComponent(target.href)}${hash}`;
+	return `${scramjetPrefix(session.id)}${encodeURIComponent(target.href)}${hash}`;
 }

@@ -3,6 +3,7 @@ import type { PreparedBundle } from "./core/importer";
 import { PageProxy } from "./core/proxy";
 import { initializeRuntimeWorker } from "./core/runtime-worker";
 import { AppStorage } from "./core/storage";
+import { runtimePath, setRuntimeBase } from "./shared/base";
 import {
 	applicationEntry,
 	errorText,
@@ -88,6 +89,19 @@ export interface ImportOptions {
 export interface NeutronOptions {
 	/** Element that app windows fill. Give it a size; Neutron positions windows inside it. */
 	viewport: HTMLElement;
+	/**
+	 * Site path where the runtime's assets are served, e.g. "/Neutron/" for a
+	 * GitHub Pages project site. Defaults to Vite's `base`, otherwise "/".
+	 */
+	base?: string;
+	/**
+	 * Hosts that cannot send cross-origin isolation headers (such as GitHub
+	 * Pages) get them from the runtime's service worker, which needs one page
+	 * reload after it first takes control. Set false to run without isolation;
+	 * synchronous IPC and SharedArrayBuffer are then unavailable.
+	 * @default true
+	 */
+	reloadForIsolation?: boolean;
 }
 
 type Listener<T> = (value: T) => void;
@@ -121,6 +135,7 @@ export class Neutron {
 	/** Mounts the runtime and verifies its service worker. One instance per page. */
 	static async create(options: NeutronOptions): Promise<Neutron> {
 		if (instance) throw new Error("Neutron is already running in this page.");
+		setRuntimeBase(options.base ?? import.meta.env?.BASE_URL ?? "/");
 		const neutron = new Neutron(options);
 		instance = neutron;
 		try {
@@ -130,6 +145,20 @@ export class Neutron {
 			instance = undefined;
 			throw error;
 		}
+		const reloaded = "neutron:isolation-reload";
+		if (crossOriginIsolated) sessionStorage.removeItem(reloaded);
+		else if (options.reloadForIsolation !== false && !sessionStorage.getItem(reloaded)) {
+			// The service worker now controls this page and adds the headers to
+			// its next navigation. Reload once; never loop if the browser refuses.
+			sessionStorage.setItem(reloaded, "1");
+			location.reload();
+			await new Promise(() => {});
+		} else
+			neutron.log(
+				"warn",
+				"runtime",
+				"This page is not cross-origin isolated, so synchronous IPC and SharedArrayBuffer are unavailable. Serve it with COOP/COEP headers.",
+			);
 		neutron.setState("stopped");
 		neutron.log(
 			"info",
@@ -333,12 +362,13 @@ export class Neutron {
 	/** The development relay served by `@neutron/runtime/vite`, or "" on static hosts. */
 	static async localRelay(): Promise<string> {
 		try {
-			const response = await fetch("/__neutron_dev__", { cache: "no-store" });
+			const response = await fetch(runtimePath("__neutron_dev__"), { cache: "no-store" });
 			if (!response.ok || !response.headers.get("content-type")?.includes("application/json"))
 				return "";
 			const config = (await response.json()) as { wisp?: string };
-			if (config.wisp !== "/wisp/") return "";
+			if (typeof config.wisp !== "string" || !config.wisp.endsWith("/wisp/")) return "";
 			const url = new URL(config.wisp, location.href);
+			if (url.origin !== location.origin) return "";
 			url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
 			return url.href;
 		} catch {

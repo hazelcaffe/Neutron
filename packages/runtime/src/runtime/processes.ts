@@ -2,6 +2,7 @@ import { Buffer } from "buffer";
 import { EventEmitter } from "events";
 import path from "path-browserify";
 import { PassThrough, Readable } from "readable-stream";
+import { runtimePath } from "../shared/base";
 import type { FilePatch, RuntimeConfig } from "../shared/types";
 import type { VirtualFileSystem } from "./filesystem";
 import { gitVersion, isGit, runGit } from "./git-command";
@@ -205,7 +206,7 @@ export function processModules(
 			const { transferList = [], ...bootOptions } = options;
 			const transfers = nativeTransfers(transferList);
 			const workerData = transferValue(options.workerData);
-			this.worker = new Worker("/runtime/node-worker.js", {
+			this.worker = new Worker(runtimePath("runtime/node-worker.js"), {
 				name: options.name || `neutron-child:${this.pid}`,
 			});
 			const crashed = (reason: string) => {

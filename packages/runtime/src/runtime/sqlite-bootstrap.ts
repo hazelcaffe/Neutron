@@ -1,4 +1,5 @@
 import type { SqlJsStatic } from "sql.js";
+import { runtimePath } from "../shared/base";
 
 // This classic parser-blocking script runs before the renderer/preloads and
 // before Scramjet hooks XHR. Synchronous instantiation leaves only microtasks,
@@ -12,7 +13,7 @@ function initializeRenderer() {
 	request.open(
 		"GET",
 		new URL(
-			"/vendor/sqlite/sql-wasm.wasm",
+			runtimePath("vendor/sqlite/sql-wasm.wasm"),
 			globalThis.__neutronProxyBootstrap?.hostOrigin ?? location.origin,
 		).href,
 		false,

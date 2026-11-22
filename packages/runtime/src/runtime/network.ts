@@ -3,6 +3,7 @@ import { Buffer } from "buffer";
 import { EventEmitter } from "events";
 import { libcurl } from "libcurl.js";
 import { Duplex } from "readable-stream";
+import { runtimePath } from "../shared/base";
 import { httpModule } from "./http";
 import type { LoopbackRegistry } from "./loopback";
 import { VirtualServer } from "./optional";
@@ -13,7 +14,7 @@ import { WebSocket as BrowserWebSocket, hostFetch as browserFetch } from "./tran
 let curlWasm: Promise<void> | undefined;
 export function loadCurl(): Promise<void> {
 	curlWasm ??= (async () => {
-		const path = "/vendor/libcurl/libcurl.wasm";
+		const path = runtimePath("vendor/libcurl/libcurl.wasm");
 		const response = await browserFetch(path, { cache: "no-store" });
 		if (!response.ok)
 			throw new Error(
@@ -56,9 +57,9 @@ export class Network {
 		if (url.protocol === "blob:" || url.protocol === "data:") return browserFetch(input, init);
 		if (
 			url.origin === location.origin &&
-			(url.pathname.startsWith("/vendor/") ||
-				url.pathname.startsWith("/runtime/") ||
-				url.pathname.startsWith("/__neutron"))
+			(url.pathname.startsWith(runtimePath("vendor/")) ||
+				url.pathname.startsWith(runtimePath("runtime/")) ||
+				url.pathname.startsWith(runtimePath("__neutron")))
 		)
 			return browserFetch(input, init);
 		return this.fetch(input, init);

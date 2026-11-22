@@ -1,3 +1,4 @@
+import { runtimePath } from "../shared/base";
 import { hostScope } from "./transport";
 
 // Minimal built-ins for synchronous wasm-bindgen bindings shipped as runtime
@@ -5,7 +6,10 @@ import { hostScope } from "./transport";
 export const { TextDecoder, TextEncoder } = globalThis;
 export function readFileSync(filename: string): Uint8Array {
 	const url = new URL(filename, hostScope.location.href);
-	if (url.origin !== hostScope.location.origin || !url.pathname.startsWith("/vendor/"))
+	if (
+		url.origin !== hostScope.location.origin ||
+		!url.pathname.startsWith(runtimePath("vendor/"))
+	)
 		throw new Error(`Invalid WASM asset location: ${filename}`);
 	const xhr = new hostScope.XMLHttpRequest();
 	xhr.open("GET", url.href, false);

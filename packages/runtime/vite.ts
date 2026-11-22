@@ -9,8 +9,9 @@ import { buildAssets, defaultAssetsDir } from "./scripts/assets.mjs";
 
 export interface NeutronPluginOptions {
 	/**
-	 * Serve a same-origin Wisp relay at /wisp/ in `vite dev` and `vite preview`,
-	 * and advertise it at /__neutron_dev__. Deployed sites need their own relay.
+	 * Serve a same-origin Wisp relay at <base>wisp/ in `vite dev` and `vite
+	 * preview`, and advertise it at <base>__neutron_dev__. Deployed sites need
+	 * their own relay.
 	 * @default true
 	 */
 	relay?: boolean;
@@ -63,11 +64,19 @@ export function neutron(options: NeutronPluginOptions = {}): Plugin {
 	logging.set_level(logging.ERROR);
 	const connections = new Set<Duplex>();
 	const attach = (server: ViteDevServer | PreviewServer, assets: string) => {
+		// Paths below are relative to Vite's base, e.g. "/Neutron/".
+		const base = server.config.base.endsWith("/")
+			? server.config.base
+			: `${server.config.base}/`;
+		const local = (url = "") => {
+			const pathname = url.split("?")[0] || "/";
+			return pathname.startsWith(base) ? `/${pathname.slice(base.length)}` : undefined;
+		};
 		if (relay) {
 			wisp.options.allow_private_ips = true;
 			wisp.options.allow_loopback_ips = true;
 			const upgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-				if (request.url?.split("?")[0] !== "/wisp/") return;
+				if (local(request.url) !== "/wisp/") return;
 				// Don't let unrelated websites use this development relay.
 				if (request.headers.origin) {
 					let matches = false;
@@ -92,13 +101,17 @@ export function neutron(options: NeutronPluginOptions = {}): Plugin {
 			});
 		}
 		server.middlewares.use((request, response, next) => {
-			const pathname = (request.url || "").split("?")[0] || "/";
+			const pathname = local(request.url);
+			if (!pathname) {
+				next();
+				return;
+			}
 			if (relay && pathname === "/__neutron_dev__") {
 				response.writeHead(200, {
 					"Content-Type": "application/json",
 					"Cache-Control": "no-store",
 				});
-				response.end(JSON.stringify({ wisp: "/wisp/" }));
+				response.end(JSON.stringify({ wisp: `${base}wisp/` }));
 				return;
 			}
 			if (relay && pathname === "/wisp/") {

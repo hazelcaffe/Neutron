@@ -1,4 +1,5 @@
 import { parse, stringify } from "@ungap/structured-clone/json";
+import { syncPrefix } from "./base";
 
 export { parse, stringify };
 export interface SyncRequest {
@@ -20,7 +21,7 @@ export function syncCall<T>(
 	args: unknown[],
 ): T {
 	const xhr = new XMLHttpRequest();
-	xhr.open("POST", `/__neutron_sync__/${encodeURIComponent(instanceId)}/${target}`, false);
+	xhr.open("POST", `${syncPrefix()}${encodeURIComponent(instanceId)}/${target}`, false);
 	xhr.setRequestHeader("Content-Type", "application/json");
 	xhr.send(stringify({ nonce: crypto.randomUUID(), method, args } satisfies SyncRequest));
 	if (!xhr.responseText)

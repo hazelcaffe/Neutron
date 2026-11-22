@@ -1,3 +1,4 @@
+import { scramjetPrefix } from "../shared/base";
 import {
 	type CallbackReply,
 	type CallbackRequest,
@@ -42,7 +43,7 @@ export async function browserLoopback(
 			typeof caller === "string" &&
 			caller &&
 			(caller === owner.url.split("#", 1)[0] ||
-				caller.startsWith(`${new URL(owner.url).origin}/__scramjet__/${session.id}/`))
+				caller.startsWith(`${new URL(owner.url).origin}${scramjetPrefix(session.id)}`))
 		)
 	)
 		return unavailable(403);
