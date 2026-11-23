@@ -15,6 +15,7 @@ const handler = new MessageHandler({
 				const own = threadImports(wasmMemory, self.name);
 				imports.env = { ...imports.env, ...own.env, memory: wasmMemory };
 				imports.neutron = own.neutron;
+				own.wasi(imports);
 				return imports;
 			},
 		});

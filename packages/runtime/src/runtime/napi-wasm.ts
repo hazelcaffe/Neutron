@@ -51,6 +51,36 @@ function waitImports(memory: () => WebAssembly.Memory) {
 	};
 }
 
+/**
+ * WASI clock_time_get with one monotonic clock for every thread. wasm-util
+ * reads performance.now(), which counts from each worker's own start, so an
+ * Instant from one thread (a tokio timer deadline, a connection's last-heard
+ * time) is seconds off on another: timeouts fired at once or far too late.
+ * performance.timeOrigin + performance.now() is comparable across workers
+ * and still monotonic within each.
+ */
+export function clockImports(memory: () => WebAssembly.Memory) {
+	return {
+		clock_time_get(id: number, _precision: bigint, result: number): number {
+			if (!result || id < 0 || id > 3) return 28; // EINVAL
+			const milliseconds = id === 0 ? Date.now() : performance.timeOrigin + performance.now();
+			new DataView(memory().buffer).setBigUint64(
+				result,
+				BigInt(Math.round(milliseconds * 1e3)) * 1000n,
+				true,
+			);
+			return 0;
+		},
+	};
+}
+/** WASI imports with Neutron's replacements (see clockImports). */
+function wasiImports(imports: WebAssembly.Imports, memory: () => WebAssembly.Memory) {
+	imports.wasi_snapshot_preview1 = {
+		...imports.wasi_snapshot_preview1,
+		...clockImports(memory),
+	};
+}
+
 type TcpMessage = { shared: number; seq: number } & (
 	| { op: "connect"; host: string; port: number }
 	| { op: "write"; data: Uint8Array }
@@ -237,6 +267,7 @@ const cxxExceptions = {
 export function threadImports(memory: WebAssembly.Memory, channel: string) {
 	const owner = new BroadcastChannel(channel);
 	return {
+		wasi: (imports: WebAssembly.Imports) => wasiImports(imports, () => memory),
 		env: cxxExceptions,
 		neutron: {
 			...waitImports(() => memory),
@@ -299,6 +330,7 @@ function instantiate(
 		onCreateWorker: () => new hostScope.Worker(runtimePath("runtime/napi-thread.js"), { name }),
 		overwriteImports(imports: WebAssembly.Imports) {
 			imports.env = { ...imports.env, ...cxxExceptions, memory };
+			wasiImports(imports, () => memory);
 			imports.neutron = {
 				...waitImports(() => memory),
 				...tcpImports(

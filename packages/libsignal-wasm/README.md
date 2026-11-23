@@ -22,6 +22,9 @@ or a stub. Certificate pinning and every protocol check are unchanged.
     renderer prepares it asynchronously before its preload runs, and the service
     worker holds the page's own scripts until then.
   - Each wasm thread runs in `runtime/napi-thread.js`.
+  - Every thread reads the same monotonic clock (`performance.timeOrigin +
+    performance.now()`). Each worker's own `performance.now()` counts from that
+    worker's start, so timers set on one thread fired early or late on another.
 - libsignal's networking (chat and provisioning connections) uses a TCP transport
   that Neutron provides over its Wisp relay. TLS still runs inside libsignal
   (BoringSSL).

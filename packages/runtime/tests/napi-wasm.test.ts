@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
-import { describe, expect, it } from "vitest";
-import { TcpHost } from "../src/runtime/napi-wasm";
+import { describe, expect, it, vi } from "vitest";
+import { clockImports, TcpHost } from "../src/runtime/napi-wasm";
 import type { Network } from "../src/runtime/network";
 import { setRuntimeBase } from "../src/shared/base";
 import { isWasmAddonCandidate, wasmAddonFor } from "../src/shared/wasm-addons";
@@ -126,5 +126,30 @@ describe("TcpHost", () => {
 		tcp.receive({ op: "connect", shared: 64, seq: 0, host: "203.0.113.7", port: 443 });
 		sockets[0]?.emit("close");
 		expect(Atomics.load(new Int32Array(memory.buffer), 16)).toBe(2);
+	});
+});
+
+describe("WASI clock", () => {
+	const memory = new WebAssembly.Memory({ initial: 1 });
+	const read = (id: number) => {
+		expect(clockImports(() => memory).clock_time_get(id, 0n, 8)).toBe(0);
+		return Number(new DataView(memory.buffer).getBigUint64(8, true)) / 1e6;
+	};
+
+	it("gives every thread the same monotonic clock", () => {
+		const here = read(1);
+		// A worker that started 5 s later: its performance.now() is 5 s behind.
+		const now = performance.now();
+		const origin = performance.timeOrigin;
+		vi.spyOn(performance, "now").mockReturnValue(now - 5000);
+		vi.spyOn(performance, "timeOrigin", "get").mockReturnValue(origin + 5000);
+		try {
+			expect(Math.abs(read(1) - here)).toBeLessThan(50);
+		} finally {
+			vi.restoreAllMocks();
+		}
+		expect(read(1)).toBeGreaterThanOrEqual(here);
+		expect(Math.abs(read(0) - Date.now())).toBeLessThan(50);
+		expect(clockImports(() => memory).clock_time_get(9, 0n, 8)).toBe(28);
 	});
 });
